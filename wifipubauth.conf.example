@@ -51,6 +51,11 @@ Pseudonymization off
 # opnsense : serveur Voucher.
 OpnsenseVoucherServer wifipubauth
 
+# opnsense : limites propres, en plus des limites générales. Défaut : aucune.
+#OpnsenseLimitPerIdentifier 2/24h
+#OpnsenseLimitPerMac 3/1h
+#OpnsenseLimitGlobal 10/24h
+
 # Groupe des vouchers.
 VoucherGroup sms
 
@@ -80,7 +85,12 @@ OvhSmsUrl https://www.ovh.com/cgi-bin/sms/http2sms.cgi
 # ovh : expéditeur. Obligatoire.
 #OvhSmsSender
 
-# --- Limites ---------------------------------------------------------------
+# ovh : limites propres, en plus des limites générales. Défaut : aucune.
+#OvhSmsLimitPerIdentifier 2/24h
+#OvhSmsLimitPerMac 3/1h
+#OvhSmsLimitGlobal 10/24h
+
+# --- Limites générales -----------------------------------------------------
 
 # Demandes par numéro.
 LimitPerIdentifier 2/24h

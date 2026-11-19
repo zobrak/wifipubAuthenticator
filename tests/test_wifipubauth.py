@@ -225,6 +225,17 @@ def test_limite_globale(tmp_path, faux):
     assert len(Ovh.recus) == 2
 
 
+def test_limite_fournisseur(tmp_path, faux, capsys):
+    Opn, Ovh, po, ps = faux
+    s = service(ecrire_config(tmp_path, po, ps, extra="OvhSmsLimitGlobal 1/1d\n"))
+    for i in range(3):
+        s.demande(attributs("06000000%02d" % i, mac=None))
+    assert attendre(lambda: len(Ovh.recus) == 1)
+    time.sleep(0.2)
+    assert len(Ovh.recus) == 1
+    assert "rule=ovh.global" in capsys.readouterr().err
+
+
 def test_echec_opnsense_pas_de_sms(tmp_path, faux, capsys):
     Opn, Ovh, po, ps = faux
     Opn.reponse = (200, b'{"status":"error"}')
@@ -407,7 +418,7 @@ def config_modele(tmp_path, langue=""):
 
 def test_template_livre(tmp_path):
     texte, langue, avert = w.lire_modele(config_modele(tmp_path, "fr-FR"))
-    assert texte.startswith("Code Wi-Fi") and langue == "fr-FR" and avert == []
+    assert texte.endswith("{mot_de_passe}-{identifiant}") and langue == "fr-FR" and avert == []
 
 
 def test_template_personnalise_prioritaire(tmp_path):
@@ -417,7 +428,7 @@ def test_template_personnalise_prioritaire(tmp_path):
         'Message.fr-FR "Code : {mot_de_passe}-{identifiant}"\n')
     assert w.lire_modele(c)[0] == "Code : {mot_de_passe}-{identifiant}"
     c.langue = "en-US"
-    assert w.lire_modele(c)[0].startswith("Wi-Fi code")
+    assert w.lire_modele(c)[0].startswith("Wi-Fi: access code")
 
 
 def test_template_langue_systeme_et_repli(tmp_path, monkeypatch):

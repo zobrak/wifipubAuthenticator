@@ -259,6 +259,12 @@ MOTS_CLES = {
     "limitperidentifier": ("limite_identifiant", limite, (2, 86400)),
     "limitpermac":        ("limite_mac", limite, (3, 3600)),
     "limitglobal":        ("limite_globale", limite, (10, 86400)),
+    "opnsenselimitperidentifier": ("limite_opnsense_identifiant", limite, ()),
+    "opnsenselimitpermac":        ("limite_opnsense_mac", limite, ()),
+    "opnsenselimitglobal":        ("limite_opnsense_globale", limite, ()),
+    "ovhsmslimitperidentifier":   ("limite_ovh_identifiant", limite, ()),
+    "ovhsmslimitpermac":          ("limite_ovh_mac", limite, ()),
+    "ovhsmslimitglobal":          ("limite_ovh_globale", limite, ()),
     "httptimeout":        ("delai_http", duree, 10),
 }
 
@@ -276,6 +282,9 @@ NOMS = {
     "ovhsmspassword": "OvhSmsPassword", "ovhsmssender": "OvhSmsSender",
     "limitperidentifier": "LimitPerIdentifier", "limitpermac": "LimitPerMac",
     "limitglobal": "LimitGlobal", "httptimeout": "HttpTimeout",
+    "opnsenselimitperidentifier": "OpnsenseLimitPerIdentifier", "opnsenselimitpermac": "OpnsenseLimitPerMac",
+    "opnsenselimitglobal": "OpnsenseLimitGlobal", "ovhsmslimitperidentifier": "OvhSmsLimitPerIdentifier",
+    "ovhsmslimitpermac": "OvhSmsLimitPerMac", "ovhsmslimitglobal": "OvhSmsLimitGlobal",
 }
 
 # Mots-clés secrets : jamais affichés.
@@ -290,6 +299,13 @@ OBLIGATOIRES_FOURNISSEUR = {
     "smsapiprovider": {
         "ovh": ("ovhsmsaccount", "ovhsmslogin", "ovhsmspassword", "ovhsmssender"),
     },
+}
+
+# Limites propres à chaque fournisseur, facultatives, en plus des limites
+# générales : fournisseur → attributs (par identifiant, par MAC, globale).
+LIMITES_FOURNISSEUR = {
+    "opnsense": ("limite_opnsense_identifiant", "limite_opnsense_mac", "limite_opnsense_globale"),
+    "ovh": ("limite_ovh_identifiant", "limite_ovh_mac", "limite_ovh_globale"),
 }
 
 # Anciens mots-clés encore acceptés (avertissement) : ancien → nouveau.
@@ -553,11 +569,17 @@ def mac_normalisee(texte):
 
 class Limites:
     def __init__(self, config):
+        """Règles : limites générales (identifier, mac, global), puis limites des
+        fournisseurs en service (FOURNISSEUR.identifier, .mac, .global)."""
         self.regles = {
             "identifier": config.limite_identifiant,
             "mac": config.limite_mac,
             "global": config.limite_globale,
         }
+        for fournisseur in (config.voucher_fournisseur, config.sms_fournisseur):
+            for portee, attribut in zip(("identifier", "mac", "global"), LIMITES_FOURNISSEUR.get(fournisseur, ())):
+                if getattr(config, attribut):
+                    self.regles["%s.%s" % (fournisseur, portee)] = getattr(config, attribut)
         self.historique = collections.defaultdict(collections.deque)
         self.verrou = threading.Lock()
 
@@ -700,9 +722,11 @@ class Service:
             journal("request_rejected", reason="channel_unavailable", channel=canal, **ref)
             return
         mac = mac_normalisee(valeur("Calling-Station-Id"))
-        cles = {"identifier": self.empreinte(destinataire), "global": "*"}
+        valeurs = {"identifier": self.empreinte(destinataire), "global": "*"}
         if mac:
-            cles["mac"] = self.empreinte(mac)
+            valeurs["mac"] = self.empreinte(mac)
+        cles = {regle: valeurs[regle.rsplit(".", 1)[-1]] for regle in self.limites.regles
+                if regle.rsplit(".", 1)[-1] in valeurs}
         regle = self.limites.accepter(cles)
         if regle:
             journal("limit_reached", rule=regle, **ref)

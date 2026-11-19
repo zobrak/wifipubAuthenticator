@@ -1,0 +1,156 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later
+
+  wifipubauth — page de connexion pour le portail captif d'OPNsense.
+
+  Un seul champ :
+    - numéro de mobile (06 ou 07) : la page demande un code, en envoyant le
+      numéro comme identifiant et le marqueur de demande comme mot de passe ;
+      le service envoie alors le code par SMS ;
+    - code reçu par SMS, de la forme MOTDEPASSE-IDENTIFIANT : la page se
+      connecte avec l'identifiant et le mot de passe du voucher.
+
+  Prérequis :
+    - MARQUEUR (ci-dessous) égal à RequestMarker de wifipubauth ;
+    - template SMS de forme {mot_de_passe}-{identifiant} (template livré) ;
+    - serveur Voucher d'OPNsense avec « Use simple passwords » coché : ni
+      l'identifiant ni le mot de passe ne contiennent alors de tiret.
+
+  Installation : zipper ce fichier seul (zip opnsense-template.zip index.html),
+  puis Services › Captive Portal › Administration › Templates. Les fichiers
+  absents du zip (css/, js/, images/…) sont repris du template par défaut.
+
+  API utilisée (celle du template par défaut d'OPNsense) :
+    POST /api/captiveportal/access/status/  état du client
+    POST /api/captiveportal/access/logon/   user, password
+    POST /api/captiveportal/access/logoff/  déconnexion
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wi-Fi public</title>
+<style>
+/* Mise en page neutre, à adapter. */
+body { margin: 0; font-family: system-ui, sans-serif; line-height: 1.5; }
+main { max-width: 26rem; margin: 3rem auto; padding: 0 1rem; }
+label, input, button { display: block; width: 100%; box-sizing: border-box; font: inherit; }
+input, button { margin-top: .5rem; padding: .6rem; }
+button { margin-top: 1rem; cursor: pointer; }
+[hidden] { display: none !important; }
+.erreur { color: #b00020; }
+</style>
+</head>
+<body>
+<main>
+<h1>Wi-Fi public</h1>
+
+<p id="chargement" role="status">Vérification de la connexion…</p>
+
+<!-- Demande de code et connexion -->
+<form id="formulaire" hidden>
+  <p>Saisissez votre numéro de mobile pour recevoir un code par SMS, puis collez ce code ici.</p>
+  <label for="saisie">Numéro de mobile ou code reçu par SMS</label>
+  <input id="saisie" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+  <button id="valider" type="submit">Valider</button>
+</form>
+<p id="envoye" role="status" hidden>Si le numéro est valide, un SMS va vous être envoyé. Collez le code reçu dans le champ ci-dessus.</p>
+
+<!-- Client connecté -->
+<div id="session" hidden>
+  <p>Vous êtes connecté.</p>
+  <button id="deconnexion" type="button">Se déconnecter</button>
+</div>
+
+<!-- Zone sans authentification -->
+<p id="sans-authentification" hidden>Ce portail ne demande pas d'authentification.</p>
+
+<p id="erreur" class="erreur" role="alert" hidden></p>
+</main>
+
+<script>
+'use strict';
+
+/* Doit être égal à RequestMarker de wifipubauth (défaut : demande). */
+const MARQUEUR = 'demande';
+
+/* Numéro de mobile français, séparateurs retirés. */
+const NUMERO = /^0[67][0-9]{8}$/;
+/* Code reçu par SMS : MOTDEPASSE-IDENTIFIANT. */
+const CODE = /^([^\s-]+)-([^\s-]+)$/;
+
+const $ = id => document.getElementById(id);
+const redirection = new URL(window.location).searchParams.get('redirurl');
+
+function erreur(texte) { $('erreur').textContent = texte; $('erreur').hidden = !texte; }
+
+/* Appel de l'API du portail ; renvoie la réponse JSON. */
+async function api(action, user = '', password = '') {
+    const reponse = await fetch('/api/captiveportal/access/' + action + '/', {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ user, password })
+    });
+    if (!reponse.ok) throw new Error('HTTP ' + reponse.status);
+    return reponse.json();
+}
+
+/* Affiche la partie qui correspond à l'état du client. */
+function afficher(etat) {
+    const connecte = etat.clientState === 'AUTHORIZED';
+    $('session').hidden = !connecte;
+    $('formulaire').hidden = connecte || etat.authType === 'none';
+    $('sans-authentification').hidden = connecte || etat.authType !== 'none';
+}
+
+async function etat() {
+    erreur('');
+    try { afficher(await api('status')); }
+    catch (_) { erreur('Portail injoignable. Vérifiez la connexion au Wi-Fi puis rechargez la page.'); }
+    finally { $('chargement').hidden = true; }
+}
+
+$('formulaire').addEventListener('submit', async evenement => {
+    evenement.preventDefault();
+    erreur('');
+    const saisie = $('saisie').value.trim();
+    const numero = saisie.replace(/[\s.-]/g, '');
+    const code = NUMERO.test(numero) ? null : CODE.exec(saisie);
+    if (!NUMERO.test(numero) && !code) {
+        erreur('Saisissez un numéro de mobile (06 ou 07) ou le code reçu par SMS.');
+        return;
+    }
+    $('valider').disabled = true;
+    try {
+        if (code) {
+            /* Connexion avec le voucher : identifiant après le tiret. */
+            const reponse = await api('logon', code[2], code[1]);
+            if (reponse.clientState === 'AUTHORIZED') {
+                if (redirection) { window.location = 'http://' + redirection + '?refresh'; return; }
+                $('saisie').value = ''; $('envoye').hidden = true; afficher(reponse);
+            } else {
+                erreur('Code refusé. Vérifiez le code reçu par SMS.');
+            }
+        } else {
+            /* Demande de code : le portail refuse toujours, le SMS part en tâche de fond. */
+            await api('logon', numero, MARQUEUR);
+            $('saisie').value = ''; $('envoye').hidden = false;
+        }
+    } catch (_) {
+        erreur('Le portail ne répond pas. Réessayez dans quelques instants.');
+    } finally {
+        $('valider').disabled = false;
+    }
+});
+
+$('deconnexion').addEventListener('click', async () => {
+    erreur('');
+    try { await api('logoff'); await etat(); }
+    catch (_) { erreur('La déconnexion n\'a pas pu être confirmée. Réessayez.'); }
+});
+
+etat();
+</script>
+</body>
+</html>

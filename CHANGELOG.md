@@ -5,6 +5,28 @@ Format : [Keep a Changelog 1.1.0](https://keepachangelog.com/fr/1.1.0/) ;
 numérotation : [Semantic Versioning 2.0.0](https://semver.org/lang/fr/).
 Le numéro de la version courante est dans le fichier `VERSION`.
 
+## [0.10.0] - 2026-11-19
+
+### Ajouté
+- portail/opnsense/index.html : page de connexion à champ unique (numéro, puis code reçu), mise en page neutre.
+- Limites par fournisseur : OpnsenseLimit* et OvhSmsLimit*, en plus des limites générales.
+- install.conf : ServiceName (nom du service).
+
+### Modifié
+- Template SMS livré : code de forme {mot_de_passe}-{identifiant}.
+- install.sh : section ÉDITION supprimée, remplacée par ServiceName.
+- README.md : configuration d'OPNsense détaillée (serveur Voucher, page de connexion, zone).
+
+## [0.9.2] - 2026-11-19
+
+### Ajouté
+- README.md : présentation, prérequis, installation, configuration, commandes, journal.
+
+## [0.9.1] - 2026-11-19
+
+### Ajouté
+- install.sh : renomme les mots-clés obsolètes de conf.d (valeurs inchangées, sauvegarde), sauf refus.
+
 ## [0.9.0] - 2026-11-19
 
 ### Ajouté

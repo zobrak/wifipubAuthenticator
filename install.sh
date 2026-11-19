@@ -43,23 +43,30 @@
 set -Eeuo pipefail
 umask 022
 
-###########################################################################
-#### ÉDITION : seul réglage à adapter                                  ####
-###########################################################################
-
-# Nom du service. Il sert de nom au compte système et aux dossiers.
-# Lettres, chiffres, _ et - ; commence par une lettre ou _ ; 32 caractères au plus.
-readonly NOM_SERVICE="wifipubauth"
-
-###########################################################################
-###########################################################################
-#### NE RIEN MODIFIER SOUS CETTE LIGNE SANS SAVOIR CE QUE VOUS FAITES ! ###
-###########################################################################
-###########################################################################
-
 DOSSIER_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly DOSSIER_SCRIPT
 readonly NOM_PROJET="wifipubauth"            # nom d'origine dans les fichiers livrés
+
+# Valeur active (ligne sans #) d'un mot-clé dans un fichier « MotClé valeur ».
+valeur_conf() {
+    local fichier="$1" cle="$2" mot valeur
+    [[ -r "$fichier" ]] || return 0
+    while read -r mot valeur || [[ -n "$mot" ]]; do
+        [[ -n "$mot" && "$mot" != \#* && "${mot,,}" == "${cle,,}" && -n "$valeur" ]] || continue
+        valeur="${valeur%%#*}"; valeur="${valeur%"${valeur##*[![:space:]]}"}"
+        valeur="${valeur#\"}"; valeur="${valeur%\"}"
+        printf '%s' "$valeur"
+        return 0
+    done < "$fichier"
+    return 0
+}
+
+# Nom du service (compte système, dossiers, commandes) : ServiceName
+# d'install.conf, sinon d'install.conf.old, sinon le nom du projet.
+NOM_SERVICE="$(valeur_conf "$DOSSIER_SCRIPT/install.conf" ServiceName)"
+[[ -n "$NOM_SERVICE" ]] || NOM_SERVICE="$(valeur_conf "$DOSSIER_SCRIPT/install.conf.old" ServiceName)"
+[[ -n "$NOM_SERVICE" ]] || NOM_SERVICE="$NOM_PROJET"
+readonly NOM_SERVICE
 
 readonly COMPTE="$NOM_SERVICE"
 readonly DOSSIER_CONF="/etc/$NOM_SERVICE"
@@ -277,7 +284,7 @@ notes_de_version() {
 ###########################################################################
 
 [[ "$NOM_SERVICE" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]] \
-    || echec "NOM_SERVICE invalide : « $NOM_SERVICE » (section ÉDITION en tête du script)"
+    || echec "install.conf : ServiceName invalide : « $NOM_SERVICE » (lettres, chiffres, _ et -, 32 caractères au plus)"
 (( EUID == 0 )) || echec "droits root requis : sudo ./install.sh"
 
 if ! { touch "$JOURNAL_INSTALL" && chmod 0600 "$JOURNAL_INSTALL"; }; then
@@ -333,18 +340,19 @@ fi
 # et install.conf. Résultats : I_APPLIQUER (« MotClé<TAB>valeur » à écrire par
 # wifipubauthctl set), I_SECRETS (à saisir), I_CLE (FingerprintKey à générer),
 # I_RADIUS_ECOUTE et I_RADIUS_CLIENT (création du site FreeRADIUS).
-I_APPLIQUER=() I_SECRETS=() I_MANQUE=() I_OBSOLETES=() I_CLE=0 I_RADIUS_ECOUTE="" I_RADIUS_CLIENT=""
+I_APPLIQUER=() I_SECRETS=() I_MANQUE=() I_OBSOLETES=() I_RENOMMER=() I_CLE=0 I_RADIUS_ECOUTE="" I_RADIUS_CLIENT=""
 I_ECOUTE="127.0.0.1" I_PORT="8642"
 preparer "$DOSSIER_SCRIPT/$NOM_PROJET.conf.example"
 SITE_A_CREER=0
 SITE_ACTIF="$(site_defini "$DOSSIER_FR/sites-enabled")"
 [[ -z "$SITE_ACTIF" && -z "$(site_defini "$DOSSIER_FR/sites-available")" ]] && SITE_A_CREER=1
-if ! I_SORTIE="$(python3 -I - "$DOSSIER_SCRIPT" "$NOM_PROJET" "$PREPARE" "$CONF_INSTALL" "$SITE_A_CREER" 2>&1 <<'PY'
+if ! I_SORTIE="$(python3 -I - "$DOSSIER_SCRIPT" "$NOM_PROJET" "$PREPARE" "$CONF_INSTALL" "$SITE_A_CREER" "$DOSSIER_SURCHARGES" 2>&1 <<'PY'
 import importlib, ipaddress, os, shlex, sys
 sys.path.insert(0, sys.argv[1])
 m = importlib.import_module(sys.argv[2])
-exemple, chemin, site_a_creer = sys.argv[3], sys.argv[4], sys.argv[5] == "1"
+exemple, chemin, site_a_creer, surcharges = sys.argv[3], sys.argv[4], sys.argv[5] == "1", sys.argv[6]
 RADIUS = {"radiuslistenaddress": "RadiusListenAddress", "radiusclientaddress": "RadiusClientAddress"}
+INSTALLATION = {"servicename"}          # lu par install.sh lui-même
 
 def sortir(*morceaux):
     print("\t".join("".join(c if c.isprintable() else "?" for c in str(x)) for x in morceaux))
@@ -379,6 +387,8 @@ if os.path.exists(chemin):
             erreur("install.conf:%d : %s remplacé par %s" % (numero, nom, m.OBSOLETES[mot][1]))
         if mot in m.SECRETS:
             erreur("install.conf:%d : %s est un secret, demandé à l'installation" % (numero, nom))
+        if mot in INSTALLATION:
+            continue
         if mot not in m.MOTS_CLES and mot not in RADIUS:
             erreur("install.conf:%d : mot-clé inconnu « %s »" % (numero, nom))
         if len(morceaux) == 1:
@@ -419,15 +429,29 @@ if cle:
 for mot, valeur in saisies.items():
     if actuelles.get(mot) != valeur and not (cle and mot == "pseudonymization"):
         sortir("APPLIQUER", m.NOMS[mot], brutes[mot])
-for nouveau, ancien in obsoletes:
-    sortir("OBSOLETE", ancien, nouveau)
+# Anciens mots-clés de conf.d : renommables (ALIAS) ou à retirer (OBSOLETES).
+import glob
+for fichier in sorted(glob.glob(os.path.join(surcharges, "*.conf"))):
+    with open(fichier, encoding="utf-8") as f:
+        for ligne in f:
+            try:
+                morceaux = shlex.split(ligne, comments=True)
+            except ValueError:
+                continue
+            if not morceaux:
+                continue
+            mot = morceaux[0].lower()
+            if mot in m.ALIAS:
+                sortir("RENOMMER", fichier, morceaux[0], m.NOMS[m.ALIAS[mot]])
+            elif mot in m.OBSOLETES:
+                sortir("OBSOLETE", morceaux[0], m.OBSOLETES[mot][1])
 sortir("ECOUTE", effectives.get("listenaddress", m.MOTS_CLES["listenaddress"][2]),
        effectives.get("listenport", m.MOTS_CLES["listenport"][2]))
 PY
 )"; then
     echec "lecture des paramètres impossible : $I_SORTIE"
 fi
-while IFS=$'\t' read -r type a b; do
+while IFS=$'\t' read -r type a b c; do
     case "$type" in
         ERREUR)    echec "$a" ;;
         MANQUE)    I_MANQUE+=("$a") ;;
@@ -437,6 +461,7 @@ while IFS=$'\t' read -r type a b; do
         RADIUS)    [[ "$a" == RadiusListenAddress ]] && I_RADIUS_ECOUTE="$b" || I_RADIUS_CLIENT="$b" ;;
         ECOUTE)    I_ECOUTE="$a" I_PORT="$b" ;;
         OBSOLETE)  I_OBSOLETES+=("$a : remplacé par $b") ;;
+        RENOMMER)  I_RENOMMER+=("$a"$'\t'"$b"$'\t'"$c") ;;
     esac
 done <<< "$I_SORTIE"
 if (( ${#I_MANQUE[@]} )); then
@@ -549,13 +574,18 @@ fi
 
 # Mots-clés obsolètes de la configuration personnalisée.
 P_OBSOLETE=("${I_OBSOLETES[@]}")
+P_RENOMMER=()
+for entree in "${I_RENOMMER[@]}"; do
+    IFS=$'\t' read -r fichier ancien nouveau <<< "$entree"
+    P_RENOMMER+=("$ancien → $nouveau ($fichier)")
+done
 
 # Affichage du plan.
 P_PARAMETRES=()
 for entree in "${I_APPLIQUER[@]}"; do P_PARAMETRES+=("${entree//$'\t'/ }"); done
 (( I_CLE )) && P_PARAMETRES+=("Pseudonymization on (FingerprintKey générée)")
 A_FAIRE=$(( ${#P_PAQUETS[@]} + ${#P_AJOUT[@]} + ${#P_MAJ[@]} + ${#P_LOCAL[@]} + ${#P_AUTRES[@]}
-            + ${#P_PARAMETRES[@]} + ${#I_SECRETS[@]} ))
+            + ${#P_PARAMETRES[@]} + ${#I_SECRETS[@]} + ${#P_RENOMMER[@]} ))
 [[ "$VERSION_PRESENTE" != "$VERSION_LIVREE" ]] && A_FAIRE=$(( A_FAIRE + 1 ))
 if [[ -n "$VERSION_PRESENTE" && "$VERSION_PRESENTE" != "$VERSION_LIVREE" ]]; then
     dire "Mise à jour de $NOM_SERVICE $VERSION_PRESENTE vers $VERSION_LIVREE."
@@ -575,6 +605,7 @@ liste "Fichiers modifiés localement, à remplacer (copie de sauvegarde conserv�
 liste "Autres opérations :" "${P_AUTRES[@]}"
 liste "Paramètres à enregistrer :" "${P_PARAMETRES[@]}"
 liste "Secrets à saisir :" "${I_SECRETS[@]}"
+liste "Mots-clés obsolètes à renommer :" "${P_RENOMMER[@]}"
 liste "Configuration à corriger :" "${P_OBSOLETE[@]}"
 
 if (( A_FAIRE == 0 )); then
@@ -585,6 +616,10 @@ elif (( SIMULATION )); then
 elif ! confirmer "Souhaitez-vous continuer ?"; then
     dire "Abandon."
     exit 0
+fi
+RENOMMER=0
+if (( ${#P_RENOMMER[@]} && ! SIMULATION )) && confirmer "Renommer les mots-clés obsolètes ?"; then
+    RENOMMER=1
 fi
 
 ###########################################################################
@@ -683,6 +718,40 @@ if (( A_FAIRE )); then
 
     if (( UNITE_MODIFIEE )); then
         systemctl daemon-reload || echec "systemctl daemon-reload a échoué"
+    fi
+
+    # Mots-clés obsolètes de conf.d : seul le nom change ; copie de sauvegarde.
+    if (( RENOMMER )); then
+        declare -A FICHIERS_RENOMMES=()
+        for entree in "${I_RENOMMER[@]}"; do
+            IFS=$'\t' read -r fichier _ _ <<< "$entree"
+            FICHIERS_RENOMMES["$fichier"]=1
+        done
+        for fichier in "${!FICHIERS_RENOMMES[@]}"; do
+            sauvegarde="$fichier.sauvegarde-$(date +%Y%m%d-%H%M%S)"
+            cp -p -- "$fichier" "$sauvegarde"
+            python3 -I - "$DOSSIER_SCRIPT" "$NOM_PROJET" "$fichier" <<'PY' || echec "renommage impossible : $fichier"
+import importlib, os, re, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+m = importlib.import_module(sys.argv[2])
+fichier = sys.argv[3]
+with open(fichier, encoding="utf-8") as f:
+    lignes = f.readlines()
+for i, ligne in enumerate(lignes):
+    r = re.match(r"(\s*)(\S+)(.*)", ligne, re.S)
+    if r and r.group(2).lower() in m.ALIAS:
+        lignes[i] = r.group(1) + m.NOMS[m.ALIAS[r.group(2).lower()]] + r.group(3)
+etat = os.stat(fichier)
+d, t = tempfile.mkstemp(dir=os.path.dirname(fichier), prefix=".wpa-")
+with os.fdopen(d, "w", encoding="utf-8") as f:
+    f.writelines(lignes)
+os.chown(t, etat.st_uid, etat.st_gid)
+os.chmod(t, etat.st_mode & 0o777)
+os.replace(t, fichier)
+PY
+            ok "Mots-clés renommés dans $fichier (sauvegarde : $sauvegarde)"
+        done
+        APP_MODIFIEE=1
     fi
 
     # Paramètres d'install.conf, puis secrets (saisie interactive).
