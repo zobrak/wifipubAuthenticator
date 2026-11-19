@@ -5,6 +5,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -65,13 +66,13 @@ def ecrire_config(tmp_path, port_opn, port_sms, extra=""):
     conf_d = tmp_path / "conf.d"
     conf_d.mkdir()
     (conf_d / "secrets.conf").write_text(
-        extra + "Pseudonymization on\nFingerprintKey cle-test\nOpnsenseApiKey k\nOpnsenseApiSecret s\n"
+        extra + "Language fr-FR\nPseudonymization on\nFingerprintKey cle-test\nOpnsenseApiKey k\nOpnsenseApiSecret s\n"
         "SmsApiProvider ovh\nOvhSmsPassword Abcd1234\n"
         "OpnsenseUrl http://127.0.0.1:%d\nOpnsenseVoucherServer Vouchers\nVoucherApiProvider opnsense\nOvhSmsAccount sms-test-1\n"
         "OvhSmsLogin utilisateur\nOvhSmsSender Expediteur\nOvhSmsUrl http://127.0.0.1:%d/sms\n" % (port_opn, port_sms))
     exemple = open(os.path.join(RACINE, "wifipubauth.conf.example")).read()
     exemple = exemple.replace("/etc/wifipubauth/conf.d", str(conf_d))
-    exemple = exemple.replace("/usr/local/lib/wifipubauth/i18n", os.path.join(RACINE, "i18n"))
+    shutil.copytree(os.path.join(RACINE, "templates"), tmp_path / "templates")
     chemin = tmp_path / "w.conf"
     chemin.write_text(exemple)
     return str(chemin)
@@ -88,7 +89,7 @@ def attributs(nom, mdp="demande", mac="aa-bb-cc-dd-ee-ff"):
 
 def service(chemin):
     config = w.lire_config(chemin)
-    s = w.Service(config, w.lire_catalogue(config))
+    s = w.Service(config, w.lire_modele(config)[0])
     threading.Thread(target=s.travailleur, daemon=True).start()
     return s
 
@@ -394,6 +395,64 @@ def test_fournisseurs_deduits_des_parametres(tmp_path, faux):
     f.write_text(f.read_text().replace("VoucherApiProvider opnsense\n", "").replace("SmsApiProvider ovh\n", ""))
     c = w.lire_config(chemin)
     assert c.voucher_fournisseur == "opnsense" and c.sms_fournisseur == "ovh" and c.obsoletes == []
+
+
+def config_modele(tmp_path, langue=""):
+    c = w.Config()
+    c.dossier_conf, c.voucher_fournisseur, c.langue = str(tmp_path), "opnsense", langue
+    c.dossier_catalogues = str(tmp_path / "i18n")
+    shutil.copytree(os.path.join(RACINE, "templates"), tmp_path / "templates", dirs_exist_ok=True)
+    return c
+
+
+def test_template_livre(tmp_path):
+    texte, langue, avert = w.lire_modele(config_modele(tmp_path, "fr-FR"))
+    assert texte.startswith("Code Wi-Fi") and langue == "fr-FR" and avert == []
+
+
+def test_template_personnalise_prioritaire(tmp_path):
+    c = config_modele(tmp_path, "fr-FR")
+    (tmp_path / "templates.d").mkdir()
+    (tmp_path / "templates.d" / "opnsense-sms.conf").write_text(
+        'Message.fr-FR "Code : {mot_de_passe}-{identifiant}"\n')
+    assert w.lire_modele(c)[0] == "Code : {mot_de_passe}-{identifiant}"
+    c.langue = "en-US"
+    assert w.lire_modele(c)[0].startswith("Wi-Fi code")
+
+
+def test_template_langue_systeme_et_repli(tmp_path, monkeypatch):
+    c = config_modele(tmp_path)
+    monkeypatch.setattr(w, "langue_systeme", lambda: "fr-FR")
+    assert w.lire_modele(c)[1] == "fr-FR"
+    monkeypatch.setattr(w, "langue_systeme", lambda: "de-DE")
+    texte, langue, avert = w.lire_modele(c)
+    assert langue == "en-US" and "Message.de-DE absent" in avert[0]
+
+
+def test_template_reperes_obligatoires(tmp_path):
+    c = config_modele(tmp_path, "fr-FR")
+    (tmp_path / "templates.d").mkdir()
+    (tmp_path / "templates.d" / "opnsense-sms.conf").write_text('Message.fr-FR "sans code"\n')
+    with pytest.raises(w.ErreurConfig, match="identifiant"):
+        w.lire_modele(c)
+
+
+def test_ancien_texte_personnalise(tmp_path):
+    c = config_modele(tmp_path, "fr-FR")
+    (tmp_path / "i18n").mkdir()
+    (tmp_path / "i18n" / "fr-FR.json").write_text(
+        '{"sms.voucher": "Code Wi-Fi valable {validite_heures} h : identifiant {identifiant}, mot de passe {mot_de_passe}"}')
+    assert w.lire_modele(c)[2] == []                       # copie non modifiée : ignorée
+    (tmp_path / "i18n" / "fr-FR.json").write_text('{"sms.voucher": "Ancien {mot_de_passe}-{identifiant}"}')
+    texte, _, avert = w.lire_modele(c)
+    assert texte == "Ancien {mot_de_passe}-{identifiant}" and "texte obsolète" in avert[0]
+
+
+def test_catalogdirectory_obsolete(tmp_path, faux):
+    Opn, Ovh, po, ps = faux
+    chemin = ecrire_config(tmp_path, po, ps, extra="CatalogDirectory /x\n")
+    c = w.lire_config(chemin)
+    assert c.dossier_catalogues == "/x" and ("templates.d/", "CatalogDirectory") in c.obsoletes
 
 
 # --- wifipubauthctl set ---------------------------------------------------------------

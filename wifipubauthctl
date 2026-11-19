@@ -195,6 +195,8 @@ def cmd_set(args):
     mot = args.parametre.lower()
     if mot in app.ALIAS:
         echec("%s : mot-clé obsolète, utiliser %s" % (args.parametre, app.NOMS[app.ALIAS[mot]]), 2)
+    if mot in app.OBSOLETES:
+        echec("%s : mot-clé obsolète, remplacé par %s" % (args.parametre, app.OBSOLETES[mot][1]), 2)
     if mot not in app.MOTS_CLES:
         echec("%s : mot-clé inconnu" % args.parametre, 2)
     nom = app.NOMS[mot]

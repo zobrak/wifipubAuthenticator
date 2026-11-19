@@ -74,6 +74,7 @@ EVENEMENTS = {
     "voucher_failed":   ("échec de la création du voucher", "195cf6e877e04712b97e9250adceaa17"),
     "internal_error":   ("erreur interne", "9e99364e2872407496b5d62283af76ca"),
     "config_deprecated": ("mot-clé obsolète", "0c5f3a7e2b9d4e61a8f7c2d9e4b1a356"),
+    "template_warning": ("template", "da37679bf51d4e9698609874a79871ed"),
 }
 
 CONTROLE = re.compile(r"[\x00-\x1f\x7f]")
@@ -179,6 +180,12 @@ def limite(texte):
     return int(m.group(1)), duree(m.group(2))
 
 
+def langue(texte):
+    if not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", texte):
+        raise ValueError("forme attendue : fr-FR")
+    return texte
+
+
 def texte_court(texte):
     if not texte or len(texte) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in texte):
         raise ValueError("texte vide, trop long ou avec caractère de contrôle")
@@ -232,8 +239,7 @@ MOTS_CLES = {
     "listenport":         ("port", port, 8642),
     "requestmarker":      ("marqueur", texte_court, "demande"),
     "channels":           ("canaux", liste_canaux, ("sms",)),
-    "language":           ("langue", texte_court, "fr-FR"),
-    "catalogdirectory":   ("dossier_catalogues", texte_court, "/usr/local/lib/%s/i18n" % NOM),
+    "language":           ("langue", langue, ""),
     "pseudonymization":   ("pseudonymisation", on_off, False),
     "fingerprintkey":     ("cle_empreinte", texte_court, ""),
     "voucherapiprovider": ("voucher_fournisseur", fournisseur_voucher, None),
@@ -259,7 +265,7 @@ MOTS_CLES = {
 # Nom affiché de chaque mot-clé.
 NOMS = {
     "listenaddress": "ListenAddress", "listenport": "ListenPort", "requestmarker": "RequestMarker",
-    "channels": "Channels", "language": "Language", "catalogdirectory": "CatalogDirectory",
+    "channels": "Channels", "language": "Language",
     "pseudonymization": "Pseudonymization", "fingerprintkey": "FingerprintKey",
     "voucherapiprovider": "VoucherApiProvider",
     "opnsenseurl": "OpnsenseUrl", "opnsenseapikey": "OpnsenseApiKey",
@@ -292,6 +298,10 @@ ALIAS = {
     "smsurl": "ovhsmsurl", "smsaccount": "ovhsmsaccount", "smslogin": "ovhsmslogin",
     "smspassword": "ovhsmspassword", "smssender": "ovhsmssender",
 }
+
+# Anciens mots-clés sans équivalent direct, encore lus (avertissement) :
+# mot-clé → (nom affiché, remplacement indiqué).
+OBSOLETES = {"catalogdirectory": ("CatalogDirectory", "templates.d/")}
 
 # Fournisseur impliqué par un ancien mot-clé, en l'absence de choix explicite.
 FOURNISSEUR_IMPLICITE = {
@@ -349,6 +359,13 @@ def lire_valeurs(chemin, obsoletes=None):
                 for inclus in sorted(glob.glob(arguments[0])):
                     lire(inclus, profondeur + 1)
                 continue
+            if mot in OBSOLETES:
+                if len(arguments) != 1:
+                    raise ErreurConfig("%s:%d : %s attend une seule valeur" % (fichier, numero, morceaux[0]))
+                if (OBSOLETES[mot][1], morceaux[0]) not in obsoletes:
+                    obsoletes.append((OBSOLETES[mot][1], morceaux[0]))
+                valeurs.setdefault(mot, arguments[0])
+                continue
             if mot in ALIAS:
                 if (NOMS[ALIAS[mot]], morceaux[0]) not in obsoletes:
                     obsoletes.append((NOMS[ALIAS[mot]], morceaux[0]))
@@ -383,6 +400,8 @@ def lire_config(chemin):
     valeurs = lire_valeurs(chemin, obsoletes)
     config = Config()
     config.obsoletes = obsoletes
+    config.dossier_conf = os.path.dirname(os.path.abspath(chemin))
+    config.dossier_catalogues = valeurs.get("catalogdirectory", "/etc/%s/i18n" % NOM)
     for mot, (nom, _, defaut) in MOTS_CLES.items():
         setattr(config, nom, valeurs.get(mot, defaut))
     manquants = mots_cles_manquants(valeurs)
@@ -408,22 +427,98 @@ def mots_cles_manquants(valeurs):
     return [NOMS[m] for m in exiges if m not in valeurs]
 
 
-def lire_catalogue(config):
-    chemin = os.path.join(config.dossier_catalogues, config.langue + ".json")
-    if not re.fullmatch(r"[a-z]{2}-[A-Z]{2}", config.langue):
-        raise ErreurConfig("Language invalide : %s (forme attendue fr-FR)" % config.langue)
-    try:
-        with open(chemin, encoding="utf-8") as f:
-            catalogue = json.load(f)
-    except (OSError, ValueError) as e:
-        raise ErreurConfig("catalogue %s illisible : %s" % (chemin, e))
-    gabarit = catalogue.get("sms.voucher")
-    if not isinstance(gabarit, str):
-        raise ErreurConfig("catalogue %s : clé sms.voucher absente" % chemin)
+# --- Templates des messages ---------------------------------------------------------
+
+# Textes livrés par les versions 0.8 et antérieures (i18n/LANGUE.json, clé
+# sms.voucher) : une copie identique n'est pas une personnalisation.
+TEXTES_ANCIENS = {
+    "Code Wi-Fi valable {validite_heures} h : identifiant {identifiant}, mot de passe {mot_de_passe}",
+    "Wi-Fi code valid for {validite_heures} h: username {identifiant}, password {mot_de_passe}",
+}
+
+
+def langue_systeme():
+    """Langue du système (LANG de /etc/default/locale, /etc/locale.conf ou de
+    l'environnement), forme fr-FR ; None si indéterminée (C, POSIX)."""
+    valeur = None
+    for fichier in ("/etc/default/locale", "/etc/locale.conf"):
+        try:
+            with open(fichier, encoding="utf-8") as f:
+                for ligne in f:
+                    cle, _, v = ligne.strip().partition("=")
+                    if cle == "LANG":
+                        valeur = v.strip().strip('"\'')
+        except OSError:
+            continue
+        if valeur:
+            break
+    valeur = valeur or os.environ.get("LANG", "")
+    m = re.match(r"([a-z]{2})_([A-Z]{2})", valeur)
+    return "%s-%s" % m.groups() if m else None
+
+
+def lire_modele(config, canal="sms"):
+    """Texte du message pour le canal : template FOURNISSEUR-CANAL.conf,
+    templates.d/ prioritaire sur templates/, mot-clé Message.LANGUE.
+    Renvoie (texte, langue retenue, avertissements)."""
+    nom = "%s-%s.conf" % (config.voucher_fournisseur, canal)
+    avertissements = []
+    messages = {}
+    lus = []
+    for dossier in ("templates.d", "templates"):
+        chemin = os.path.join(config.dossier_conf, dossier, nom)
+        if not os.path.exists(chemin):
+            continue
+        lus.append(chemin)
+        try:
+            with open(chemin, encoding="utf-8") as f:
+                lignes = f.readlines()
+        except OSError as e:
+            raise ErreurConfig("%s : illisible (%s)" % (chemin, e.strerror))
+        for numero, ligne in enumerate(lignes, 1):
+            if not ligne.strip() or ligne.strip().startswith("#"):
+                continue
+            try:
+                morceaux = shlex.split(ligne, comments=True, posix=True)
+            except ValueError:
+                raise ErreurConfig("%s:%d : guillemets non fermés" % (chemin, numero))
+            if not morceaux:
+                continue
+            m = re.fullmatch(r"message\.([a-z]{2})-([a-z]{2})", morceaux[0].lower())
+            if not m or len(morceaux) != 2:
+                raise ErreurConfig("%s:%d : « Message.fr-FR \"texte\" » attendu" % (chemin, numero))
+            messages.setdefault("%s-%s" % (m.group(1), m.group(2).upper()), (morceaux[1], chemin))
+    if not lus:
+        raise ErreurConfig("template %s absent (%s/templates)" % (nom, config.dossier_conf))
+
+    voulue = config.langue or langue_systeme() or "en-US"
+    retenue = voulue if voulue in messages else "en-US" if "en-US" in messages else None
+    if retenue is None:
+        raise ErreurConfig("template %s : ni Message.%s ni Message.en-US" % (nom, voulue))
+    if retenue != voulue:
+        avertissements.append("template %s : Message.%s absent, en-US utilisé" % (nom, voulue))
+    texte, chemin = messages[retenue]
+
+    # Texte personnalisé en 0.8 (CatalogDirectory, sms.voucher), lu tant que
+    # templates.d/ ne le remplace pas.
+    if canal == "sms" and not chemin.startswith(os.path.join(config.dossier_conf, "templates.d")):
+        ancien = os.path.join(config.dossier_catalogues, retenue + ".json")
+        try:
+            with open(ancien, encoding="utf-8") as f:
+                texte_ancien = json.load(f).get("sms.voucher")
+        except (OSError, ValueError, AttributeError):
+            texte_ancien = None
+        if isinstance(texte_ancien, str) and texte_ancien not in TEXTES_ANCIENS:
+            texte, chemin = texte_ancien, ancien
+            avertissements.append("texte obsolète : %s (sms.voucher), remplacé par %s"
+                                  % (ancien, os.path.join(config.dossier_conf, "templates.d", nom)))
+
     for repere in ("{identifiant}", "{mot_de_passe}"):
-        if repere not in gabarit:
-            raise ErreurConfig("catalogue %s : sms.voucher doit contenir %s" % (chemin, repere))
-    return catalogue
+        if repere not in texte:
+            raise ErreurConfig("%s : le texte doit contenir %s" % (chemin, repere))
+    if any(ord(c) < 32 or ord(c) == 127 for c in texte):
+        raise ErreurConfig("%s : caractère de contrôle dans le texte" % chemin)
+    return texte, retenue, avertissements
 
 
 # --- Validation des saisies du visiteur ---------------------------------------------
@@ -562,9 +657,9 @@ FOURNISSEURS_SMS = {"ovh": envoyer_sms_ovh}
 
 
 class Service:
-    def __init__(self, config, catalogue):
+    def __init__(self, config, gabarit):
         self.config = config
-        self.catalogue = catalogue
+        self.gabarit = gabarit
         self.limites = Limites(config)
         self.file = queue.Queue(maxsize=FILE_MAX)
 
@@ -636,7 +731,7 @@ class Service:
             journal("voucher_failed", "error", **ref, detail=raison(e))
             return
         journal("voucher_created", **ref, voucher=identifiant, group=self.config.voucher_groupe)
-        message = (self.catalogue["sms.voucher"]
+        message = (self.gabarit
                    .replace("{identifiant}", identifiant)
                    .replace("{mot_de_passe}", mot_de_passe)
                    .replace("{validite_heures}", str(self.config.voucher_validite // 3600)))
@@ -722,7 +817,7 @@ def main():
     analyse = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     analyse.add_argument("--config")
     analyse.add_argument("--verifier", action="store_true",
-                         help="vérifie la configuration et le catalogue, puis s'arrête")
+                         help="vérifie la configuration et le template, puis s'arrête")
     analyse.add_argument("--generer-cle", action="store_true",
                          help="affiche une clé aléatoire de 256 bits pour FingerprintKey, puis s'arrête")
     options = analyse.parse_args()
@@ -736,13 +831,15 @@ def main():
     NOM = nom_du_programme() or NOM
     try:
         config = lire_config(options.config)
-        catalogue = lire_catalogue(config)
+        gabarit, langue_retenue, avertissements = lire_modele(config)
     except ErreurConfig as e:
         texte = "".join(c if c.isprintable() else "?" for c in str(e))
         print("configuration invalide : %s" % texte, file=sys.stderr)
         return 2
     for nouveau, ancien in config.obsoletes:
         print("mot-clé obsolète : %s, remplacé par %s" % (ancien, nouveau), file=sys.stderr)
+    for avertissement in avertissements:
+        print("".join(c if c.isprintable() else "?" for c in avertissement), file=sys.stderr)
     if options.verifier:
         print("configuration valide", file=sys.stderr)
         return 0
@@ -751,7 +848,9 @@ def main():
     JOURNAL = Journal()   # avant tout fil : choix natif ou sortie d'erreur fait une fois
     for nouveau, ancien in config.obsoletes:
         journal("config_deprecated", "warning", keyword=ancien, replacement=nouveau)
-    service = Service(config, catalogue)
+    for avertissement in avertissements:
+        journal("template_warning", "warning", detail=avertissement)
+    service = Service(config, gabarit)
     threading.Thread(target=service.travailleur, daemon=True).start()
     serveur = http.server.ThreadingHTTPServer((config.adresse, config.port), fabrique_gestionnaire(service))
     serveur.daemon_threads = True
@@ -761,7 +860,8 @@ def main():
 
     signal.signal(signal.SIGTERM, arret)
     signal.signal(signal.SIGINT, arret)
-    journal("service_started", address=config.adresse, port=config.port, channels=",".join(config.canaux))
+    journal("service_started", address=config.adresse, port=config.port, channels=",".join(config.canaux),
+            language=langue_retenue)
     serveur.serve_forever()
     serveur.server_close()
     journal("service_stopped")

@@ -4,6 +4,7 @@
 # Configuration personnalisée : /etc/wifipubauth/conf.d/*.conf, prioritaire.
 # Modifier : wifipubauthctl set PARAMÈTRE VALEUR. Vérifier : wifipubauthctl check.
 # Format OpenSSH : « MotClé valeur », première valeur lue retenue.
+# Messages : templates/, personnalisation dans templates.d/.
 # Durées : s, m, h, d. Limites : nombre/durée.
 # Aide : https://github.com/zobrak/wifibpub
 
@@ -23,11 +24,8 @@ Channels sms
 # Mot de passe de demande de code, saisi par le visiteur avec son numéro.
 RequestMarker demande
 
-# Code langue. Disponibles : fr-FR, en-US. Traductions dans CatalogDirectory.
-Language fr-FR
-
-# Dossier des traductions.
-CatalogDirectory /usr/local/lib/wifipubauth/i18n
+# Langue des messages (templates). Défaut : langue du système.
+#Language fr-FR
 
 # Pseudonymisation des numéros dans le journal : on, off.
 # Activation : wifipubauthctl set Pseudonymization on --genkey

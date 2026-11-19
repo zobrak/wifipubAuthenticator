@@ -312,7 +312,7 @@ if ! { command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; }; 
 fi
 
 for fichier in VERSION CHANGELOG.md "$NOM_PROJET.py" "$NOM_PROJET.conf.example" "${NOM_PROJET}ctl" \
-               i18n/fr-FR.json i18n/en-US.json "systemd/$NOM_PROJET.service" \
+               templates/opnsense-sms.conf "systemd/$NOM_PROJET.service" \
                freeradius/module.conf freeradius/site.conf; do
     [[ -f "$DOSSIER_SCRIPT/$fichier" ]] || echec "fichier du projet manquant : $fichier"
 done
@@ -375,6 +375,8 @@ if os.path.exists(chemin):
         nom, mot = morceaux[0], morceaux[0].lower()
         if mot in m.ALIAS:
             erreur("install.conf:%d : %s remplacé par %s" % (numero, nom, m.NOMS[m.ALIAS[mot]]))
+        if mot in m.OBSOLETES:
+            erreur("install.conf:%d : %s remplacé par %s" % (numero, nom, m.OBSOLETES[mot][1]))
         if mot in m.SECRETS:
             erreur("install.conf:%d : %s est un secret, demandé à l'installation" % (numero, nom))
         if mot not in m.MOTS_CLES and mot not in RADIUS:
@@ -472,7 +474,8 @@ fi
 # Compte et dossiers.
 getent passwd "$COMPTE" >/dev/null || P_AUTRES+=("création du compte système $COMPTE")
 DOSSIERS=("$DOSSIER_CONF|root|$COMPTE|0750" "$DOSSIER_SURCHARGES|root|$COMPTE|0750"
-          "$DOSSIER_CODE|root|root|0755" "$DOSSIER_CODE/i18n|root|root|0755")
+          "$DOSSIER_CODE|root|root|0755"
+          "$DOSSIER_CONF/templates|root|$COMPTE|0750" "$DOSSIER_CONF/templates.d|root|$COMPTE|0750")
 for entree in "${DOSSIERS[@]}"; do
     IFS='|' read -r chemin proprio groupe mode <<< "$entree"
     if [[ -L "$chemin" ]]; then
@@ -507,8 +510,8 @@ ajouter_fichier() {   # source préparée, cible, propriétaire:groupe, mode
     F_SOURCE+=("$1") F_CIBLE+=("$2") F_PROPRIO+=("$3") F_MODE+=("$4") F_ETAT+=("$etat")
 }
 preparer "$DOSSIER_SCRIPT/$NOM_PROJET.py";              ajouter_fichier "$PREPARE" "$PROGRAMME" root:root 0644
-for catalogue in "$DOSSIER_SCRIPT"/i18n/*.json; do
-    preparer "$catalogue";                              ajouter_fichier "$PREPARE" "$DOSSIER_CODE/i18n/${catalogue##*/}" root:root 0644
+for modele in "$DOSSIER_SCRIPT"/templates/*.conf; do
+    preparer "$modele";                                 ajouter_fichier "$PREPARE" "$DOSSIER_CONF/templates/${modele##*/}" "root:$COMPTE" 0640
 done
 preparer "$DOSSIER_SCRIPT/systemd/$NOM_PROJET.service"; ajouter_fichier "$PREPARE" "$UNITE" root:root 0644
 preparer "$DOSSIER_SCRIPT/${NOM_PROJET}ctl";            ajouter_fichier "$PREPARE" "$CTL" root:root 0755
@@ -518,6 +521,10 @@ preparer "$DOSSIER_SCRIPT/freeradius/module.conf" "@NOM@=$NOM_SERVICE" \
 preparer "$DOSSIER_SCRIPT/freeradius/site.conf" "@NOM@=$NOM_SERVICE"
                                                         ajouter_fichier "$PREPARE" "$FR_MODELE" freerad:freerad 0640
 [[ -L "$DOSSIER_FR/mods-enabled/$NOM_SERVICE" ]] || P_AUTRES+=("activation du module FreeRADIUS $NOM_SERVICE")
+
+# Textes livrés des versions 0.8 et antérieures, remplacés par templates/.
+ANCIEN_I18N=0
+[[ -d "$DOSSIER_CODE/i18n" ]] && { ANCIEN_I18N=1; P_AUTRES+=("suppression de $DOSSIER_CODE/i18n (remplacé par $DOSSIER_CONF/templates)"); }
 
 for i in "${!F_CIBLE[@]}"; do
     case "${F_ETAT[$i]}" in
@@ -651,6 +658,12 @@ if (( A_FAIRE )); then
         [[ "$cible" == "$FR_MODULE" ]] && FR_MODULE_MODIFIE=1
         APP_MODIFIEE=1
     done
+
+    if (( ANCIEN_I18N )); then
+        rm -rf -- "$DOSSIER_CODE/i18n"
+        ok "Suppression de $DOSSIER_CODE/i18n"
+        APP_MODIFIEE=1
+    fi
 
     # Version installée et empreintes (détection des modifications locales).
     install -o root -g root -m 0644 "$DOSSIER_SCRIPT/VERSION" "$VERSION_INSTALLEE"
@@ -830,4 +843,5 @@ if (( CONFIG_VALIDE && FR_VALIDE )); then
     done
     printf '\n' >&2
 fi
+dire "Messages : $DOSSIER_CONF/templates/, à personnaliser dans $DOSSIER_CONF/templates.d/"
 dire "Journal : $JOURNAL_INSTALL"

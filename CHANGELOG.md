@@ -5,6 +5,26 @@ Format : [Keep a Changelog 1.1.0](https://keepachangelog.com/fr/1.1.0/) ;
 numérotation : [Semantic Versioning 2.0.0](https://semver.org/lang/fr/).
 Le numéro de la version courante est dans le fichier `VERSION`.
 
+## [0.9.0] - 2026-11-19
+
+### Ajouté
+- Templates des messages : /etc/wifipubauth/templates/FOURNISSEUR-CANAL.conf (opnsense-sms.conf), personnalisation dans templates.d/.
+- Language : langue du système par défaut ; repli sur en-US si le template ne la contient pas.
+
+### Modifié
+- Textes des SMS déplacés de i18n/ vers les templates ; CatalogDirectory obsolète (texte personnalisé encore lu, avec avertissement).
+
+### Supprimé
+- /usr/local/lib/wifipubauth/i18n.
+
+## [0.8.0] - 2026-11-19
+
+### Ajouté
+- install.sh : copie des textes livrés dans /etc/wifipubauth/i18n, une seule fois, pour personnalisation.
+
+### Modifié
+- CatalogDirectory : /etc/wifipubauth/i18n par défaut ; ses textes surchargent les textes livrés, clé par clé.
+
 ## [0.7.3] - 2026-11-19
 
 ### Ajouté
