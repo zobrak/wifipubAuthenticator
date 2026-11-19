@@ -1,0 +1,324 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""wifipubauthctl — contrôle du service wifipubauth.
+
+Version et historique : VERSION et CHANGELOG.md du projet.
+Aide et signalement de bugs : https://github.com/zobrak/wifibpub
+"""
+
+import getpass
+import glob
+import grp
+import importlib
+import os
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import tempfile
+import termios
+
+NOM = "wifipubauth"
+DOSSIER_CODE = "/usr/local/lib/%s" % NOM
+CONF = "/etc/%s/%s.conf" % (NOM, NOM)
+DOSSIER_SURCHARGES = "/etc/%s/conf.d" % NOM
+CONF_LOCALE = DOSSIER_SURCHARGES + "/local.conf"
+
+COULEURS = sys.stdout.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM", "dumb") != "dumb"
+VERT, ROUGE, RAZ = ("\033[32m", "\033[31m", "\033[0m") if COULEURS else ("", "", "")
+CONTROLE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def propre(texte):
+    return CONTROLE.sub("", str(texte))
+
+
+def ok(texte):
+    print("%s[  OK  ]%s %s" % (VERT, RAZ, propre(texte)))
+
+
+def echec(texte, code=1):
+    print("%s[FAILED]%s %s" % (ROUGE, RAZ, propre(texte)), file=sys.stderr)
+    sys.exit(code)
+
+
+def application():
+    sys.path.insert(0, DOSSIER_CODE)
+    return importlib.import_module(NOM)
+
+
+def exiger_root():
+    if os.geteuid() != 0:
+        echec("droits root requis")
+
+
+# --- Services ---------------------------------------------------------------------------
+
+def systemctl(*arguments):
+    sys.exit(subprocess.call(["systemctl", *arguments]))
+
+
+def etat(texte, valide):
+    """Ligne d'état en lecture seule : « objet : valide|invalide ». """
+    couleur = VERT if valide else ROUGE
+    objet, _, reste = texte.partition(" : ")
+    print("%s : %s%s%s" % (propre(objet), couleur, propre(reste), RAZ))
+
+
+def cmd_check(_):
+    exiger_root()
+    code = 0
+    r = subprocess.run(["runuser", "-u", NOM, "--", "/usr/bin/python3", "-I",
+                        "%s/%s.py" % (DOSSIER_CODE, NOM), "--config", CONF, "--verifier"],
+                       capture_output=True, text=True)
+    lignes = [l for l in r.stderr.splitlines() if l and l != "configuration valide"]
+    if r.returncode == 0:
+        etat("%s : configuration valide" % NOM, True)
+        for ligne in lignes:
+            print("  " + propre(ligne))
+    else:
+        etat("%s : configuration invalide" % NOM, False)
+        for ligne in lignes:
+            print("  " + propre(ligne))
+        code = 1
+    r = subprocess.run(["freeradius", "-XC"], capture_output=True, text=True)
+    sortie = r.stdout + r.stderr
+    site = re.search(r"^server %s \{ # from file (\S+)" % re.escape(NOM), sortie, re.M)
+    if r.returncode != 0:
+        etat("freeradius : configuration invalide", False)
+        for ligne in sortie.splitlines()[-8:]:
+            print("  " + propre(ligne))
+        code = 1
+    elif not site:
+        etat("freeradius : serveur virtuel %s absent de sites-enabled" % NOM, False)
+        code = 1
+    else:
+        etat("freeradius : configuration valide (%s)" % site.group(1), True)
+    sys.exit(code)
+
+
+def cmd_status(_):
+    """État résumé de chaque service ; état complet (systemctl status) des
+    services en défaut seulement."""
+    code = 0
+    for unite in (NOM + ".service", "freeradius.service"):
+        r = subprocess.run(["systemctl", "show", "--property=LoadState,ActiveState,SubState,UnitFileState",
+                            unite], capture_output=True, text=True)
+        p = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
+        actif = p.get("ActiveState", "inconnu")
+        demarrage = p.get("UnitFileState") or "inconnu"
+        bon = p.get("LoadState") == "loaded" and actif == "active" and demarrage == "enabled"
+        etat("%s : %s (%s), %s" % (unite, actif, p.get("SubState", "?"), demarrage), bon)
+        if not bon:
+            code = 3
+            sys.stdout.flush()
+            subprocess.call(["systemctl", "status", unite])
+    sys.exit(code)
+
+
+# --- Configuration ----------------------------------------------------------------------
+
+def lire_secret(nom, essais=3):
+    """Saisie masquée avec confirmation. L'entrée en attente (texte collé sur
+    plusieurs lignes) est vidée avant chaque invite."""
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        echec("%s : saisie interactive obligatoire (terminal requis)" % nom)
+
+    def invite(texte):
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        try:
+            return getpass.getpass(texte)
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            echec("%s : saisie interrompue" % nom)
+
+    for _ in range(essais):
+        premiere = invite("%s : " % nom)
+        if not premiere or CONTROLE.search(premiere) or '"' in premiere or "\\" in premiere:
+            print("%s : valeur vide, ou avec guillemet, \\ ou caractère de contrôle" % nom, file=sys.stderr)
+            continue
+        if invite("%s (confirmation) : " % nom) == premiere:
+            return premiere
+        print("%s : les deux saisies diffèrent" % nom, file=sys.stderr)
+    echec("%s : abandon après %d essais" % (nom, essais))
+
+
+def ecrire(app, mot, valeur):
+    """Écrit « Nom "valeur" » dans conf.d : remplace la ligne existante du mot-clé
+    (ou de son ancien nom) dans le fichier où elle se trouve, sinon ajoute à local.conf."""
+    nom = app.NOMS[mot]
+    anciens = {a for a, n in app.ALIAS.items() if n == mot}
+    ligne_neuve = '%s "%s"\n' % (nom, valeur)
+    cible, lignes, index = CONF_LOCALE, None, None
+    for fichier in sorted(glob.glob(DOSSIER_SURCHARGES + "/*.conf")):
+        with open(fichier, encoding="utf-8") as f:
+            contenu = f.readlines()
+        for i, ligne in enumerate(contenu):
+            try:
+                morceaux = shlex.split(ligne, comments=True)
+            except ValueError:
+                continue
+            if morceaux and (morceaux[0].lower() == mot or morceaux[0].lower() in anciens):
+                cible, lignes, index = fichier, contenu, i
+                break
+        if lignes is not None:
+            break
+    if lignes is None:
+        if os.path.exists(CONF_LOCALE):
+            with open(CONF_LOCALE, encoding="utf-8") as f:
+                lignes = f.readlines()
+            if lignes and not lignes[-1].endswith("\n"):
+                lignes[-1] += "\n"
+        else:
+            lignes = []
+        lignes.append(ligne_neuve)
+    else:
+        lignes[index] = ligne_neuve
+    gid = grp.getgrnam(NOM).gr_gid
+    descripteur, temporaire = tempfile.mkstemp(dir=os.path.dirname(cible), prefix=".wpa-")
+    try:
+        with os.fdopen(descripteur, "w", encoding="utf-8") as f:
+            f.writelines(lignes)
+        os.chown(temporaire, 0, gid)
+        os.chmod(temporaire, 0o640)
+        os.replace(temporaire, cible)
+    except BaseException:
+        os.unlink(temporaire)
+        raise
+    return cible
+
+
+def cmd_set(args):
+    exiger_root()
+    app = application()
+    mot = args.parametre.lower()
+    if mot in app.ALIAS:
+        echec("%s : mot-clé obsolète, utiliser %s" % (args.parametre, app.NOMS[app.ALIAS[mot]]), 2)
+    if mot not in app.MOTS_CLES:
+        echec("%s : mot-clé inconnu" % args.parametre, 2)
+    nom = app.NOMS[mot]
+    if args.genkey and mot != "pseudonymization":
+        echec("--genkey : seulement avec Pseudonymization on", 2)
+
+    if mot in app.SECRETS:
+        if args.valeur is not None:
+            echec("%s : secret, à saisir de façon interactive : %sctl set %s" % (nom, NOM, nom), 2)
+        valeur = lire_secret(nom)
+    elif args.valeur is None:
+        echec("%s : valeur manquante" % nom, 2)
+    else:
+        valeur = args.valeur
+    if not valeur or CONTROLE.search(valeur) or '"' in valeur or "\\" in valeur:
+        echec("%s : valeur vide, ou avec guillemet, \\ ou caractère de contrôle" % nom, 2)
+    try:
+        converti = app.MOTS_CLES[mot][1](valeur)
+    except ValueError as e:
+        echec("%s : %s" % (nom, e), 2)
+
+    if mot == "pseudonymization" and converti:
+        actuelles = app.lire_valeurs(CONF)
+        if args.genkey:
+            fichier = ecrire(app, "fingerprintkey", secrets.token_hex(32))
+            ok("FingerprintKey générée (%s)" % fichier)
+        elif not actuelles.get("fingerprintkey"):
+            echec("FingerprintKey absente : %sctl set Pseudonymization on --genkey" % NOM, 2)
+
+    fichier = ecrire(app, mot, valeur)
+    ok("%s %s(%s)" % (nom, "" if mot in app.SECRETS else valeur + " ", fichier))
+
+
+def cmd_genkey(_):
+    print(secrets.token_hex(32))
+
+
+def cmd_version(_):
+    with open(DOSSIER_CODE + "/VERSION", encoding="utf-8") as f:
+        print(propre(f.read().strip()))
+
+
+AIDE = [
+    ("status", "", "état de %s et de freeradius" % NOM),
+    ("start", "", "démarre %s" % NOM),
+    ("stop", "", "arrête %s" % NOM),
+    ("restart", "", "redémarre %s" % NOM),
+    ("enable", "", "active %s au démarrage et le démarre" % NOM),
+    ("disable", "", "désactive %s au démarrage et l'arrête" % NOM),
+    ("check", "", "vérifie la configuration de %s et de freeradius" % NOM),
+    ("set", "PARAMÈTRE [VALEUR] [--genkey]",
+     "écrit un réglage dans la configuration personnalisée ; "
+     "secret : sans VALEUR, saisie interactive ; "
+     "--genkey : avec Pseudonymization on, génère FingerprintKey"),
+    ("genkey", "", "affiche une clé pour FingerprintKey"),
+    ("version", "", "version installée"),
+    ("help", "[COMMANDE]", "aide"),
+]
+COMMANDES = [c for c, _, _ in AIDE]
+
+
+def cmd_help(commande=None):
+    if commande:
+        for c, args, texte in AIDE:
+            if c == commande:
+                print("Usage : %sctl %s %s" % (NOM, c, args) if args else "Usage : %sctl %s" % (NOM, c))
+                for partie in texte.split(" ; "):
+                    print("  " + partie)
+                return 0
+        echec("commande inconnue : %s (%sctl help)" % (commande, NOM), 2)
+    print("Usage : %sctl COMMANDE [ARGUMENTS] [--OPTIONS]" % NOM)
+    print()
+    print("Commandes :")
+    for c, args, texte in AIDE:
+        print("  %-34s %s" % ((c + " " + args).strip(), texte.split(" ; ")[0]))
+    return 0
+
+
+class Arguments:
+    pass
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        return cmd_help(argv[1] if len(argv) > 1 else None)
+    commande, reste = argv[0], argv[1:]
+    if commande not in COMMANDES:
+        echec("commande inconnue : %s (%sctl help)" % (commande, NOM), 2)
+    if "-h" in reste or "--help" in reste:
+        return cmd_help(commande)
+
+    if commande == "set":
+        args = Arguments()
+        args.genkey = "--genkey" in reste
+        positionnels = [a for a in reste if a != "--genkey"]
+        inconnues = [a for a in positionnels if a.startswith("--")]
+        if inconnues:
+            echec("option inconnue : %s (%sctl help set)" % (inconnues[0], NOM), 2)
+        if not 1 <= len(positionnels) <= 2:
+            echec("usage : %sctl set PARAMÈTRE [VALEUR] [--genkey]" % NOM, 2)
+        args.parametre = positionnels[0]
+        args.valeur = positionnels[1] if len(positionnels) == 2 else None
+        cmd_set(args)
+        return 0
+    if reste:
+        echec("%s : argument inattendu : %s (%sctl help %s)" % (commande, reste[0], NOM, commande), 2)
+
+    if commande == "status":
+        cmd_status(None)
+    elif commande in ("start", "stop", "restart"):
+        exiger_root()
+        systemctl(commande, NOM + ".service")
+    elif commande in ("enable", "disable"):
+        exiger_root()
+        systemctl(commande, "--now", NOM + ".service")
+    elif commande == "check":
+        cmd_check(None)
+    elif commande == "genkey":
+        cmd_genkey(None)
+    elif commande == "version":
+        cmd_version(None)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# wifipubauth — configuration par défaut, remplacée à chaque mise à jour.
+# Configuration personnalisée : /etc/wifipubauth/conf.d/*.conf, prioritaire.
+# Modifier : wifipubauthctl set PARAMÈTRE VALEUR. Vérifier : wifipubauthctl check.
+# Format OpenSSH : « MotClé valeur », première valeur lue retenue.
+# Durées : s, m, h, d. Limites : nombre/durée.
+# Aide : https://github.com/zobrak/wifibpub
+
+Include /etc/wifipubauth/conf.d/*.conf
+
+# --- Service ---------------------------------------------------------------
+
+# Adresse d'écoute (requêtes de FreeRADIUS).
+ListenAddress 127.0.0.1
+
+# Port d'écoute.
+ListenPort 8642
+
+# Méthode d'authentification. Disponible : sms.
+Channels sms
+
+# Mot de passe de demande de code, saisi par le visiteur avec son numéro.
+RequestMarker demande
+
+# Code langue. Disponibles : fr-FR, en-US. Traductions dans CatalogDirectory.
+Language fr-FR
+
+# Dossier des traductions.
+CatalogDirectory /usr/local/lib/wifipubauth/i18n
+
+# Pseudonymisation des numéros dans le journal : on, off.
+# Activation : wifipubauthctl set Pseudonymization on --genkey
+Pseudonymization off
+
+# Clé de pseudonymisation. Secret.
+#FingerprintKey
+
+# --- Vouchers --------------------------------------------------------------
+
+# Fournisseur des vouchers. Disponible : opnsense. Obligatoire.
+#VoucherApiProvider opnsense
+
+# opnsense : adresse de l'API. Obligatoire.
+#OpnsenseUrl https://opnsense.example.org
+
+# opnsense : clé de l'API. Obligatoire.
+#OpnsenseApiKey
+
+# opnsense : secret de l'API. Obligatoire. Secret.
+#OpnsenseApiSecret
+
+# opnsense : serveur Voucher.
+OpnsenseVoucherServer wifipubauth
+
+# Groupe des vouchers.
+VoucherGroup sms
+
+# Durée de validité d'un voucher, à partir de la première connexion.
+VoucherValidity 12h
+
+# Délai d'expiration d'un voucher inutilisé.
+VoucherExpiry 1h
+
+# --- SMS -------------------------------------------------------------------
+
+# Fournisseur SMS. Disponible : ovh. Obligatoire.
+#SmsApiProvider ovh
+
+# ovh : adresse de l'API http2sms.
+OvhSmsUrl https://www.ovh.com/cgi-bin/sms/http2sms.cgi
+
+# ovh : compte SMS. Obligatoire.
+#OvhSmsAccount sms-xx00000-1
+
+# ovh : utilisateur SMS. Obligatoire.
+#OvhSmsLogin
+
+# ovh : mot de passe de l'utilisateur SMS. Obligatoire. Secret.
+#OvhSmsPassword
+
+# ovh : expéditeur. Obligatoire.
+#OvhSmsSender
+
+# --- Limites ---------------------------------------------------------------
+
+# Demandes par numéro.
+LimitPerIdentifier 2/24h
+
+# Demandes par appareil (adresse MAC).
+LimitPerMac 3/1h
+
+# Demandes pour l'ensemble du service.
+LimitGlobal 10/24h
+
+# Délai maximal des appels aux fournisseurs (vouchers, SMS).
+HttpTimeout 10s
