@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import termios
+import time
 
 NOM = "wifipubauth"
 DOSSIER_CODE = "/usr/local/lib/%s" % NOM
@@ -55,8 +56,28 @@ def exiger_root():
 
 # --- Services ---------------------------------------------------------------------------
 
-def systemctl(*arguments):
-    sys.exit(subprocess.call(["systemctl", *arguments]))
+ACTIONS = {
+    "start":   ("Démarrage", "active"),
+    "restart": ("Redémarrage", "active"),
+    "stop":    ("Arrêt", "inactive"),
+    "enable":  ("Activation au démarrage et démarrage", "active"),
+    "disable": ("Désactivation au démarrage et arrêt", "inactive"),
+}
+
+
+def piloter(action):
+    """Action systemd sur le service, puis vérification de l'état obtenu."""
+    unite = NOM + ".service"
+    libelle, attendu = ACTIONS[action]
+    arguments = [action, "--now", unite] if action in ("enable", "disable") else [action, unite]
+    r = subprocess.run(["systemctl", *arguments], capture_output=True, text=True)
+    if r.returncode == 0 and attendu == "active":
+        time.sleep(2)   # un échec au lancement survient dans les premières secondes
+    etat_actif = subprocess.run(["systemctl", "is-active", unite], capture_output=True, text=True).stdout.strip()
+    if r.returncode != 0 or etat_actif != attendu:
+        detail = propre(r.stderr.strip().splitlines()[-1]) if r.stderr.strip() else "état : %s" % etat_actif
+        echec("%s de %s : %s (journalctl -u %s -n 50)" % (libelle, unite, detail, NOM))
+    ok("%s de %s" % (libelle, unite))
 
 
 def etat(texte, valide):
@@ -449,12 +470,9 @@ def main():
 
     if commande == "status":
         cmd_status(None)
-    elif commande in ("start", "stop", "restart"):
+    elif commande in ACTIONS:
         exiger_root()
-        systemctl(commande, NOM + ".service")
-    elif commande in ("enable", "disable"):
-        exiger_root()
-        systemctl(commande, "--now", NOM + ".service")
+        piloter(commande)
     elif commande == "check":
         cmd_check(None)
     elif commande == "genkey":

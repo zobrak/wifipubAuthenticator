@@ -5,6 +5,11 @@ Format : [Keep a Changelog 1.1.0](https://keepachangelog.com/fr/1.1.0/) ;
 numérotation : [Semantic Versioning 2.0.0](https://semver.org/lang/fr/).
 Le numéro de la version courante est dans le fichier `VERSION`.
 
+## [0.12.1] - 2026-11-20
+
+### Modifié
+- wifipubauthctl start, stop, restart, enable, disable : résultat affiché, état vérifié.
+
 ## [0.12.0] - 2026-11-20
 
 ### Ajouté
