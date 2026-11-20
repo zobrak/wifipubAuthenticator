@@ -560,12 +560,15 @@ for i in "${!F_CIBLE[@]}"; do
     esac
 done
 
-# Site FreeRADIUS : créé une seule fois, puis activé à la place des sites
-# d'exemple de Debian.
+# Site FreeRADIUS : créé une seule fois. Les sites d'exemple de Debian sont
+# désactivés tant que le site du service est actif ou à créer : default écoute
+# sur toutes les adresses, port 1812, et empêche FreeRADIUS de démarrer.
 FR_EXEMPLES=()
 if (( SITE_A_CREER )); then
     P_AUTRES+=("création de $FR_SITE (secret RADIUS généré)")
     [[ -L "$DOSSIER_FR/sites-enabled/$NOM_SERVICE" ]] || P_AUTRES+=("activation du site FreeRADIUS $NOM_SERVICE")
+fi
+if (( SITE_A_CREER )) || [[ -n "$SITE_ACTIF" ]]; then
     for lien in sites-enabled/default sites-enabled/inner-tunnel mods-enabled/eap; do
         [[ -L "$DOSSIER_FR/$lien" ]] && FR_EXEMPLES+=("$lien")
     done
@@ -788,12 +791,13 @@ PY
             ln -s "../sites-available/$NOM_SERVICE" "$DOSSIER_FR/sites-enabled/$NOM_SERVICE"
             ok "Activation du site FreeRADIUS $NOM_SERVICE"
         fi
-        for lien in "${FR_EXEMPLES[@]}"; do
-            rm -f -- "$DOSSIER_FR/$lien"
-            ok "Désactivation de $lien"
-        done
         FR_MODULE_MODIFIE=1
     fi
+    for lien in "${FR_EXEMPLES[@]}"; do
+        rm -f -- "$DOSSIER_FR/$lien"
+        ok "Désactivation de $lien"
+        FR_MODULE_MODIFIE=1
+    done
 else
     UNITE_MODIFIEE=0 APP_MODIFIEE=0 FR_MODULE_MODIFIE=0
 fi
@@ -821,6 +825,26 @@ if [[ -n "$(site_defini "$DOSSIER_FR/sites-enabled")" ]]; then
     fi
 fi
 FR_MODIFIE=$FR_MODULE_MODIFIE
+
+# FreeRADIUS en service avec une configuration antérieure à la dernière
+# modification (site ou module activé, modifié ou retiré) : à redémarrer.
+if (( FR_VALIDE )) && [[ "$(systemctl is-active freeradius 2>/dev/null || true)" == active ]]; then
+    FR_PID="$(systemctl show -p MainPID --value freeradius 2>/dev/null || true)"
+    FR_DEBUT="$(python3 -I -c '
+import os, sys
+with open("/proc/%d/stat" % int(sys.argv[1])) as f:
+    debut = int(f.read().rsplit(")", 1)[1].split()[19])
+with open("/proc/stat") as f:
+    amorcage = next(int(l.split()[1]) for l in f if l.startswith("btime "))
+print(int(amorcage + debut / os.sysconf("SC_CLK_TCK")))' "${FR_PID:-0}" 2>/dev/null || true)"
+    FR_CONF="$( { find "$DOSSIER_FR/sites-enabled" "$DOSSIER_FR/mods-enabled" -maxdepth 1 -printf '%T@\n'
+                  find -L "$DOSSIER_FR/sites-enabled" "$DOSSIER_FR/mods-enabled" -maxdepth 1 -printf '%T@\n'
+                  stat -c '%Y' "$DOSSIER_FR/radiusd.conf" "$DOSSIER_FR/clients.conf"
+                } 2>/dev/null | cut -d. -f1 | sort -n | tail -n 1 || true)"
+    if [[ "$FR_DEBUT" =~ ^[0-9]+$ && "$FR_CONF" =~ ^[0-9]+$ ]] && (( FR_DEBUT < FR_CONF )); then
+        FR_MODIFIE=1
+    fi
+fi
 
 ###########################################################################
 # 5. Services

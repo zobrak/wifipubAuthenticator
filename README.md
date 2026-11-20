@@ -223,7 +223,8 @@ Déroulement :
      activation, désactivation des liens d'exemple de Debian (`default`,
      `inner-tunnel`, `eap`).
 4. **Services** : démarrage de `wifipubauth` et de FreeRADIUS, chacun seulement
-   si sa configuration est valide.
+   si sa configuration est valide ; FreeRADIUS est redémarré si sa
+   configuration a changé depuis son démarrage.
 5. **Bilan** : sorties de `wifipubauthctl check`, `status` et `help`.
 
 À la fin, `install.conf` est renommé `install.conf.old`. Le journal détaillé de
@@ -257,6 +258,9 @@ sudo ./install.sh
   copie de sauvegarde, sauf refus à la question posée.
 - Un fichier livré modifié localement est sauvegardé (`.sauvegarde-DATE`) avant
   d'être remplacé.
+- Les liens des sites d'exemple de Debian (`default`, `inner-tunnel`, `eap`)
+  sont retirés s'ils sont présents : `default` écoute sur toutes les adresses,
+  port 1812, et empêche FreeRADIUS de démarrer à côté du site du service.
 
 ---
 
@@ -526,9 +530,9 @@ wifipubauthctl COMMANDE [ARGUMENTS] [--OPTIONS]
 | Commande | Rôle |
 |---|---|
 | `status` | état résumé de wifipubauth et de FreeRADIUS ; état complet d'un service en défaut |
-| `start`, `stop`, `restart` | démarre, arrête, redémarre wifipubauth |
+| `start`, `stop`, `restart` | démarre, arrête, redémarre wifipubauth ; redémarre aussi FreeRADIUS si sa configuration a changé depuis son démarrage |
 | `enable`, `disable` | active (et démarre), désactive (et arrête) wifipubauth au démarrage |
-| `check` | vérifie la configuration de wifipubauth, du template et de FreeRADIUS (lecture seule) |
+| `check` | vérifie la configuration de wifipubauth, du template et de FreeRADIUS, puis FreeRADIUS en service : conflit d'écoute, configuration chargée, écoute du site (lecture seule) |
 | `set PARAMÈTRE [VALEUR] [--genkey]` | écrit un réglage dans `conf.d/` après contrôle |
 | `genkey` | affiche une clé pour `FingerprintKey` |
 | `version` | version installée |

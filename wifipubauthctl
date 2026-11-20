@@ -78,6 +78,23 @@ def piloter(action):
         detail = propre(r.stderr.strip().splitlines()[-1]) if r.stderr.strip() else "état : %s" % etat_actif
         echec("%s de %s : %s (journalctl -u %s -n 50)" % (libelle, unite, detail, NOM))
     ok("%s de %s" % (libelle, unite))
+    if action in ("start", "restart", "enable") and freeradius_a_jour() is False:
+        redemarrer_freeradius()
+
+
+def redemarrer_freeradius():
+    """Redémarre FreeRADIUS, dont la configuration a changé depuis son démarrage,
+    après avoir vérifié qu'elle est valide."""
+    if subprocess.run(["freeradius", "-XC"], capture_output=True).returncode != 0:
+        echec("freeradius : configuration modifiée mais invalide, non redémarré (%sctl check)" % NOM)
+    r = subprocess.run(["systemctl", "restart", "freeradius.service"], capture_output=True, text=True)
+    time.sleep(2)
+    actif = subprocess.run(["systemctl", "is-active", "freeradius.service"],
+                           capture_output=True, text=True).stdout.strip()
+    if r.returncode != 0 or actif != "active":
+        echec("Redémarrage de freeradius.service : %s (journalctl -u freeradius -n 50)"
+              % (propre(r.stderr.strip().splitlines()[-1]) if r.stderr.strip() else "état : " + actif))
+    ok("Redémarrage de freeradius.service (configuration modifiée)")
 
 
 def etat(texte, valide):
@@ -116,7 +133,139 @@ def cmd_check(_):
         code = 1
     else:
         etat("freeradius : configuration valide (%s)" % site.group(1), True)
+        code |= verifier_freeradius_en_service(site.group(1))
     sys.exit(code)
+
+
+# --- FreeRADIUS en service ------------------------------------------------------------
+
+DOSSIER_FR = "/etc/freeradius/3.0"
+
+
+def debut_processus(pid):
+    """Heure (epoch) de démarrage d'un processus, d'après /proc."""
+    with open("/proc/%d/stat" % pid) as f:
+        debut = int(f.read().rsplit(")", 1)[1].split()[19])   # champ 22 : starttime
+    with open("/proc/stat") as f:
+        amorcage = next(int(l.split()[1]) for l in f if l.startswith("btime "))
+    return amorcage + debut / os.sysconf("SC_CLK_TCK")
+
+
+def derniere_modification_freeradius():
+    """Date de la dernière modification de la configuration active de
+    FreeRADIUS : liens et fichiers de sites-enabled et mods-enabled,
+    radiusd.conf, clients.conf."""
+    dates = []
+    for dossier in ("sites-enabled", "mods-enabled"):
+        chemin = os.path.join(DOSSIER_FR, dossier)
+        dates.append(os.stat(chemin).st_mtime)
+        for entree in os.listdir(chemin):
+            for suivre in (False, True):
+                try:
+                    dates.append(os.stat(os.path.join(chemin, entree), follow_symlinks=suivre).st_mtime)
+                except OSError:
+                    pass
+    for fichier in ("radiusd.conf", "clients.conf"):
+        try:
+            dates.append(os.stat(os.path.join(DOSSIER_FR, fichier)).st_mtime)
+        except OSError:
+            pass
+    return max(dates)
+
+
+def freeradius_a_jour():
+    """None si FreeRADIUS n'est pas actif, sinon True si le processus en
+    service a démarré après la dernière modification de sa configuration."""
+    r = subprocess.run(["systemctl", "show", "--property=MainPID", "--value", "freeradius.service"],
+                       capture_output=True, text=True)
+    try:
+        pid = int(r.stdout.strip())
+        if pid <= 0:
+            return None
+        return debut_processus(pid) >= derniere_modification_freeradius()
+    except (ValueError, OSError, StopIteration):
+        return None
+
+
+def ecoute_du_site(fichier):
+    """(adresse, port) d'écoute du serveur virtuel du service, lus dans son fichier."""
+    with open(fichier, encoding="utf-8") as f:
+        texte = f.read()
+    serveur = re.search(r"^\s*server\s+%s\s*\{(.*)" % re.escape(NOM), texte, re.M | re.S)
+    ecoute = re.search(r"listen\s*\{([^}]*)\}", serveur.group(1) if serveur else "")
+    if not ecoute:
+        return None
+    adresse = re.search(r"^\s*ipaddr\s*=\s*(\S+)", ecoute.group(1), re.M)
+    port = re.search(r"^\s*port\s*=\s*(\d+)", ecoute.group(1), re.M)
+    return (adresse.group(1) if adresse else "*", int(port.group(1)) if port else 1812)
+
+
+def freeradius_ecoute(adresse, port):
+    """True si un processus freeradius écoute en UDP sur adresse:port (une
+    écoute sur toutes les adresses ne compte que si adresse vaut *)."""
+    toutes = ("*", "0.0.0.0", "::")
+    r = subprocess.run(["ss", "-H", "-u", "-l", "-n", "-p"], capture_output=True, text=True)
+    for ligne in r.stdout.splitlines():
+        morceaux = ligne.split()
+        if len(morceaux) < 4 or '"freeradius"' not in ligne:
+            continue
+        hote, _, port_local = morceaux[3].rpartition(":")
+        hote = hote.strip("[]").split("%")[0]
+        if port_local == str(port) and (hote == adresse or (adresse in toutes and hote in toutes)):
+            return True
+    return False
+
+
+def conflits_ecoute(fichier_site, port):
+    """Autres sites activés qui écoutent en authentification sur toutes les
+    adresses et le même port : FreeRADIUS ne peut alors pas démarrer."""
+    conflits = []
+    dossier = os.path.join(DOSSIER_FR, "sites-enabled")
+    for nom in sorted(os.listdir(dossier)):
+        chemin = os.path.join(dossier, nom)
+        if os.path.realpath(chemin) == os.path.realpath(fichier_site):
+            continue
+        try:
+            with open(chemin, encoding="utf-8", errors="replace") as f:
+                texte = re.sub(r"#.*", "", f.read())
+        except OSError:
+            continue
+        for bloc in re.findall(r"listen\s*\{([^}]*)\}", texte):
+            type_ = re.search(r"^\s*type\s*=\s*(\S+)", bloc, re.M)
+            adresse = re.search(r"^\s*ip(?:v4|v6)?addr\s*=\s*(\S+)", bloc, re.M)
+            port_bloc = re.search(r"^\s*port\s*=\s*(\d+)", bloc, re.M)
+            port_effectif = int(port_bloc.group(1)) if port_bloc else 0
+            if type_ and type_.group(1) == "auth" and adresse and adresse.group(1) == "*" \
+                    and (port_effectif or 1812) == port:
+                conflits.append(nom)
+                break
+    return conflits
+
+
+def verifier_freeradius_en_service(fichier_site):
+    """FreeRADIUS en service : pas de conflit d'écoute, actif, configuration
+    chargée, écoute du site. Renvoie 0 si tout va bien, 1 sinon."""
+    ecoute = ecoute_du_site(fichier_site)
+    if ecoute and ecoute[0] not in ("*", "0.0.0.0", "::"):
+        conflits = conflits_ecoute(fichier_site, ecoute[1])
+        if conflits:
+            etat("freeradius : %s écoute sur toutes les adresses, port %d : conflit avec %s "
+                 "(lien à retirer : %s)" % (", ".join(conflits), ecoute[1], NOM,
+                                             ", ".join("sites-enabled/" + c for c in conflits)), False)
+            return 1
+    a_jour = freeradius_a_jour()
+    if a_jour is None:
+        etat("freeradius : service arrêté", False)
+        return 1
+    if not a_jour:
+        etat("freeradius : configuration modifiée depuis le démarrage, redémarrage nécessaire "
+             "(%sctl restart)" % NOM, False)
+        return 1
+    if ecoute and not freeradius_ecoute(*ecoute):
+        etat("freeradius : n'écoute pas sur %s:%d" % ecoute, False)
+        return 1
+    etat("freeradius : en service%s" % (", écoute sur %s:%d" % ecoute if ecoute else ""), True)
+    return 0
 
 
 def cmd_status(_):

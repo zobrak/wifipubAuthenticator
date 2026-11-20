@@ -5,6 +5,16 @@ Format : [Keep a Changelog 1.1.0](https://keepachangelog.com/fr/1.1.0/) ;
 numérotation : [Semantic Versioning 2.0.0](https://semver.org/lang/fr/).
 Le numéro de la version courante est dans le fichier `VERSION`.
 
+## [0.13.0] - 2026-11-20
+
+### Ajouté
+- wifipubauthctl check : FreeRADIUS en service, configuration chargée, écoute du serveur virtuel.
+- FreeRADIUS redémarré si sa configuration a changé depuis son démarrage (install.sh, wifipubauthctl start, restart, enable).
+
+### Corrigé
+- Module rest : FreeRADIUS démarre même si wifipubauth est arrêté ; reconnexion après une seconde.
+- install.sh : sites d'exemple de Debian désactivés aussi pour un site existant (conflit sur le port 1812) ; wifipubauthctl check signale ce conflit.
+
 ## [0.12.1] - 2026-11-20
 
 ### Modifié
