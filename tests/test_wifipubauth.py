@@ -236,6 +236,26 @@ def test_limite_fournisseur(tmp_path, faux, capsys):
     assert "rule=ovh.global" in capsys.readouterr().err
 
 
+def test_identifiant_exempte(tmp_path, faux, capsys):
+    Opn, Ovh, po, ps = faux
+    s = service(ecrire_config(tmp_path, po, ps, extra="LimitExemptIdentifiers \"06 12 34 56 78,0700000000\"\nLimitGlobal 1/1d\n"))
+    for _ in range(3):
+        s.demande(attributs("0612345678", mac="aa-bb-cc-dd-ee-01"))
+    assert attendre(lambda: len(Ovh.recus) == 3)
+    s.demande(attributs("0611111111"))
+    s.demande(attributs("0622222222"))
+    assert attendre(lambda: len(Ovh.recus) == 4)
+    time.sleep(0.2)
+    assert len(Ovh.recus) == 4          # exempté : hors limites, sans consommer la globale
+    assert "limit_exempt=True" in capsys.readouterr().err
+
+
+def test_exemptes_invalides(tmp_path, faux):
+    Opn, Ovh, po, ps = faux
+    with pytest.raises(w.ErreurConfig, match="identifiant invalide"):
+        w.lire_config(ecrire_config(tmp_path, po, ps, extra="LimitExemptIdentifiers 0512345678\n"))
+
+
 def test_echec_opnsense_pas_de_sms(tmp_path, faux, capsys):
     Opn, Ovh, po, ps = faux
     Opn.reponse = (200, b'{"status":"error"}')

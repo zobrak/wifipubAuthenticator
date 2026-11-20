@@ -186,6 +186,17 @@ def langue(texte):
     return texte
 
 
+def liste_exemptes(texte):
+    """Identifiants séparés par des virgules, normalisés comme les demandes."""
+    exemptes = []
+    for morceau in texte.split(","):
+        cible = identifiant_valide(morceau.strip())
+        if cible is None:
+            raise ValueError("identifiant invalide : %s" % morceau.strip())
+        exemptes.append(cible[1])
+    return tuple(exemptes)
+
+
 def texte_court(texte):
     if not texte or len(texte) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in texte):
         raise ValueError("texte vide, trop long ou avec caractère de contrôle")
@@ -266,6 +277,7 @@ MOTS_CLES = {
     "ovhsmslimitpermac":          ("limite_ovh_mac", limite, ()),
     "ovhsmslimitglobal":          ("limite_ovh_globale", limite, ()),
     "httptimeout":        ("delai_http", duree, 10),
+    "limitexemptidentifiers": ("exemptes", liste_exemptes, ()),
 }
 
 # Nom affiché de chaque mot-clé.
@@ -282,6 +294,7 @@ NOMS = {
     "ovhsmspassword": "OvhSmsPassword", "ovhsmssender": "OvhSmsSender",
     "limitperidentifier": "LimitPerIdentifier", "limitpermac": "LimitPerMac",
     "limitglobal": "LimitGlobal", "httptimeout": "HttpTimeout",
+    "limitexemptidentifiers": "LimitExemptIdentifiers",
     "opnsenselimitperidentifier": "OpnsenseLimitPerIdentifier", "opnsenselimitpermac": "OpnsenseLimitPerMac",
     "opnsenselimitglobal": "OpnsenseLimitGlobal", "ovhsmslimitperidentifier": "OvhSmsLimitPerIdentifier",
     "ovhsmslimitpermac": "OvhSmsLimitPerMac", "ovhsmslimitglobal": "OvhSmsLimitGlobal",
@@ -722,8 +735,9 @@ class Service:
             journal("request_rejected", reason="channel_unavailable", channel=canal, **ref)
             return
         mac = mac_normalisee(valeur("Calling-Station-Id"))
-        valeurs = {"identifier": self.empreinte(destinataire), "global": "*"}
-        if mac:
+        exempte = destinataire in self.config.exemptes
+        valeurs = {} if exempte else {"identifier": self.empreinte(destinataire), "global": "*"}
+        if mac and not exempte:
             valeurs["mac"] = self.empreinte(mac)
         cles = {regle: valeurs[regle.rsplit(".", 1)[-1]] for regle in self.limites.regles
                 if regle.rsplit(".", 1)[-1] in valeurs}
@@ -736,7 +750,8 @@ class Service:
         except queue.Full:
             journal("queue_full", "warning", **ref)
             return
-        journal("request_accepted", channel=canal, **ref, mac_known=bool(mac))
+        journal("request_accepted", channel=canal, **ref, mac_known=bool(mac),
+                **({"limit_exempt": True} if exempte else {}))
 
     def travailleur(self):
         while True:

@@ -418,6 +418,7 @@ Durées : nombre suivi de `s`, `m`, `h` ou `d`. Limites : `nombre/durée`.
 | `LimitPerIdentifier` | `2/24h` | demandes par numéro |
 | `LimitPerMac` | `3/1h` | demandes par appareil (adresse MAC) |
 | `LimitGlobal` | `10/24h` | demandes pour l'ensemble du service |
+| `LimitExemptIdentifiers` | aucun | identifiants exemptés de toutes les limites, séparés par des virgules |
 | `HttpTimeout` | `10s` | délai maximal des appels aux fournisseurs |
 
 **Limites par fournisseur**, facultatives, appliquées en plus des limites
@@ -565,7 +566,7 @@ Le service écrit dans journald par le protocole natif. Chaque événement porte
 | `WPA_EVENT` | Niveau | Signification |
 |---|---|---|
 | `service_started`, `service_stopped` | info | démarrage (adresse, port, canaux, langue), arrêt |
-| `request_accepted` | info | demande valide, mise en file d'envoi |
+| `request_accepted` | info | demande valide, mise en file d'envoi (`WPA_LIMIT_EXEMPT` si exemptée) |
 | `request_rejected` | info | demande ignorée (`WPA_REASON`) |
 | `limit_reached` | info | limite atteinte (`WPA_RULE`) |
 | `voucher_created` | info | voucher créé |

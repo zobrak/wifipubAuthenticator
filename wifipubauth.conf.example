@@ -101,5 +101,8 @@ LimitPerMac 3/1h
 # Demandes pour l'ensemble du service.
 LimitGlobal 10/24h
 
+# Identifiants exemptés de toutes les limites, séparés par des virgules. Défaut : aucun.
+#LimitExemptIdentifiers 0600000000,0700000000
+
 # Délai maximal des appels aux fournisseurs (vouchers, SMS).
 HttpTimeout 10s

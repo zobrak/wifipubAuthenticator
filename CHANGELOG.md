@@ -5,6 +5,11 @@ Format : [Keep a Changelog 1.1.0](https://keepachangelog.com/fr/1.1.0/) ;
 numérotation : [Semantic Versioning 2.0.0](https://semver.org/lang/fr/).
 Le numéro de la version courante est dans le fichier `VERSION`.
 
+## [0.12.0] - 2026-11-20
+
+### Ajouté
+- LimitExemptIdentifiers : identifiants exemptés de toutes les limites.
+
 ## [0.11.0] - 2026-11-20
 
 ### Ajouté
