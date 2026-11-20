@@ -536,3 +536,43 @@ def test_set_remplace_ancien_nom(ctl, monkeypatch, tmp_path):
     (tmp_path / "conf.d" / "local.conf").write_text('SmsAccount "sms-a-1"\nAutre\n')
     assert executer(ctl, monkeypatch, "set", "OvhSmsAccount", "sms-b-2") == 0
     assert (tmp_path / "conf.d" / "local.conf").read_text() == 'OvhSmsAccount "sms-b-2"\nAutre\n'
+
+
+# --- wifipubauthctl template --------------------------------------------------------------
+
+def test_longueur_sms(ctl):
+    assert ctl.longueur_sms("Code {mot_de_passe}-{identifiant}", 12)[:3] == (18, 160, "GSM 7 bits")
+    assert ctl.longueur_sms("5€ {mot_de_passe}-{identifiant}", 12)[0] == 17      # € compte double
+    longueur, limite, codage, hors = ctl.longueur_sms("Fenêtre {mot_de_passe}-{identifiant}", 12)
+    assert (limite, codage, hors) == (70, "UCS-2", ["ê"])
+
+
+def test_template_set(ctl, monkeypatch, tmp_path, faux, capsys):
+    Opn, Ovh, po, ps = faux
+    racine = tmp_path / "etc"
+    racine.mkdir()
+    chemin = ecrire_config(racine, po, ps)
+    monkeypatch.setattr(ctl, "CONF", chemin)
+    (racine / "templates.d").mkdir()
+    assert executer(ctl, monkeypatch, "template", "set", "Code {mot_de_passe}-{identifiant}") == 0
+    cible = racine / "templates.d" / "opnsense-sms.conf"
+    assert 'Message.fr-FR "Code {mot_de_passe}-{identifiant}"\n' in cible.read_text()
+    assert oct(cible.stat().st_mode & 0o777) == "0o640"
+    assert executer(ctl, monkeypatch, "template", "set", "Neu {mot_de_passe}-{identifiant}") == 0
+    assert executer(ctl, monkeypatch, "template", "set", "EN {mot_de_passe}-{identifiant}", "--lang", "en-US") == 0
+    texte = cible.read_text()
+    assert texte.count("Message.fr-FR") == 1 and "Neu" in texte and "Message.en-US" in texte
+    assert w.lire_modele(w.lire_config(chemin))[0] == "Neu {mot_de_passe}-{identifiant}"
+
+
+@pytest.mark.parametrize("texte", ["sans repères", "x" * 150 + " {mot_de_passe}-{identifiant}",
+                                   "Fenêtre " + "x" * 60 + " {mot_de_passe}-{identifiant}",
+                                   'guillemet " {mot_de_passe}-{identifiant}'])
+def test_template_set_refus(ctl, monkeypatch, tmp_path, faux, texte):
+    Opn, Ovh, po, ps = faux
+    racine = tmp_path / "etc"
+    racine.mkdir()
+    monkeypatch.setattr(ctl, "CONF", ecrire_config(racine, po, ps))
+    (racine / "templates.d").mkdir()
+    assert executer(ctl, monkeypatch, "template", "set", texte) == 2
+    assert not (racine / "templates.d" / "opnsense-sms.conf").exists()

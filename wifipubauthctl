@@ -175,6 +175,12 @@ def ecrire(app, mot, valeur):
         lignes.append(ligne_neuve)
     else:
         lignes[index] = ligne_neuve
+    ecrire_fichier(cible, lignes)
+    return cible
+
+
+def ecrire_fichier(cible, lignes):
+    """Écriture atomique, propriétaire root:NOM, droits 0640."""
     gid = grp.getgrnam(NOM).gr_gid
     descripteur, temporaire = tempfile.mkstemp(dir=os.path.dirname(cible), prefix=".wpa-")
     try:
@@ -186,7 +192,6 @@ def ecrire(app, mot, valeur):
     except BaseException:
         os.unlink(temporaire)
         raise
-    return cible
 
 
 def cmd_set(args):
@@ -230,6 +235,114 @@ def cmd_set(args):
     ok("%s %s(%s)" % (nom, "" if mot in app.SECRETS else valeur + " ", fichier))
 
 
+# --- Templates ----------------------------------------------------------------------------
+
+# Alphabet GSM 03.38 (SMS 7 bits) : table de base, et table d'extension dont
+# chaque caractère compte double. Hors de cet alphabet, le SMS passe en UCS-2.
+GSM_BASE = set("@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?"
+               "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà")
+GSM_EXTENSION = set("^{}\\[~]|€\f")
+LIMITE_GSM, LIMITE_UCS2 = 160, 70
+
+# Longueurs du voucher pour le calcul : réglages recommandés du serveur Voucher
+# (Username length 2, Password length 10).
+LONGUEUR_IDENTIFIANT, LONGUEUR_MOT_DE_PASSE = 2, 10
+
+
+def longueur_sms(texte, validite_heures):
+    """(longueur, limite, codage, caractères hors GSM) du SMS, repères remplacés."""
+    sms = (texte.replace("{identifiant}", "X" * LONGUEUR_IDENTIFIANT)
+           .replace("{mot_de_passe}", "X" * LONGUEUR_MOT_DE_PASSE)
+           .replace("{validite_heures}", str(validite_heures)))
+    hors_gsm = sorted({c for c in sms if c not in GSM_BASE and c not in GSM_EXTENSION})
+    if hors_gsm:
+        return len(sms), LIMITE_UCS2, "UCS-2", hors_gsm
+    return sum(2 if c in GSM_EXTENSION else 1 for c in sms), LIMITE_GSM, "GSM 7 bits", []
+
+
+def configuration(app):
+    try:
+        return app.lire_config(CONF)
+    except app.ErreurConfig as e:
+        echec("configuration invalide : %s (%sctl check)" % (e, NOM))
+
+
+def cmd_template_show(app, langue):
+    config = configuration(app)
+    if langue:
+        config.langue = langue
+    try:
+        texte, retenue, avertissements = app.lire_modele(config)
+    except app.ErreurConfig as e:
+        echec(str(e))
+    longueur, limite, codage, _ = longueur_sms(texte, config.voucher_validite // 3600)
+    print("%s : %s" % (retenue, propre(texte)))
+    etat("longueur : %d/%d (%s)" % (longueur, limite, codage), longueur <= limite)
+    for a in avertissements:
+        print("  " + propre(a))
+
+
+def cmd_template_set(app, texte, langue):
+    config = configuration(app)
+    langue = langue or config.langue or app.langue_systeme() or "en-US"
+    try:
+        app.langue(langue)
+    except ValueError as e:
+        echec("--lang : %s" % e, 2)
+    if texte is None:
+        if not sys.stdin.isatty():
+            echec("texte manquant : %sctl template set TEXTE [--lang LANGUE]" % NOM, 2)
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        try:
+            texte = input("Message.%s : " % langue)
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            echec("saisie interrompue")
+    texte = texte.strip()
+    if not texte or CONTROLE.search(texte) or '"' in texte or "\\" in texte:
+        echec("texte vide, ou avec guillemet, \\ ou caractère de contrôle", 2)
+    for repere in ("{identifiant}", "{mot_de_passe}"):
+        if repere not in texte:
+            echec("le texte doit contenir %s" % repere, 2)
+    longueur, limite, codage, hors_gsm = longueur_sms(texte, config.voucher_validite // 3600)
+    if longueur > limite:
+        detail = ""
+        if hors_gsm:
+            detail = " ; caractères hors alphabet GSM : %s" % " ".join(hors_gsm)
+        echec("%d caractères pour %d au plus (%s)%s" % (longueur, limite, codage, detail), 2)
+
+    nom = "%s-sms.conf" % config.voucher_fournisseur
+    dossier = os.path.join(os.path.dirname(CONF), "templates.d")
+    cible = os.path.join(dossier, nom)
+    ligne_neuve = 'Message.%s "%s"\n' % (langue, texte)
+    if os.path.exists(cible):
+        with open(cible, encoding="utf-8") as f:
+            lignes = f.readlines()
+        if lignes and not lignes[-1].endswith("\n"):
+            lignes[-1] += "\n"
+    else:
+        lignes = ["# Template personnel, prioritaire sur ../templates/%s.\n" % nom,
+                  "# Écrit par %sctl template set.\n" % NOM, "\n"]
+    for i, ligne in enumerate(lignes):
+        if re.match(r"\s*message\.%s\s" % re.escape(langue.lower()), ligne.lower()):
+            lignes[i] = ligne_neuve
+            break
+    else:
+        lignes.append(ligne_neuve)
+    ecrire_fichier(cible, lignes)
+    ok("Message.%s : %d/%d caractères, %s (%s)" % (langue, longueur, limite, codage, cible))
+    print("Prise en compte : %sctl restart" % NOM)
+
+
+def cmd_template(args):
+    exiger_root()
+    app = application()
+    if args.action == "show":
+        cmd_template_show(app, args.langue)
+    else:
+        cmd_template_set(app, args.texte, args.langue)
+
+
 def cmd_genkey(_):
     print(secrets.token_hex(32))
 
@@ -251,6 +364,11 @@ AIDE = [
      "écrit un réglage dans la configuration personnalisée ; "
      "secret : sans VALEUR, saisie interactive ; "
      "--genkey : avec Pseudonymization on, génère FingerprintKey"),
+    ("template", "show|set [TEXTE] [--lang LANGUE]",
+     "template du SMS ; show : texte du template et longueur ; "
+     "set : écrit le texte personnel dans templates.d/ (sans TEXTE : saisie) ; "
+     "longueur contrôlée : 160 caractères en GSM 7 bits, 70 sinon, code compté 13 caractères ; "
+     "--lang : langue, défaut Language ou langue du système"),
     ("genkey", "", "affiche une clé pour FingerprintKey"),
     ("version", "", "version installée"),
     ("help", "[COMMANDE]", "aide"),
@@ -270,8 +388,9 @@ def cmd_help(commande=None):
     print("Usage : %sctl COMMANDE [ARGUMENTS] [--OPTIONS]" % NOM)
     print()
     print("Commandes :")
+    largeur = max(len((c + " " + args).strip()) for c, args, _ in AIDE)
     for c, args, texte in AIDE:
-        print("  %-34s %s" % ((c + " " + args).strip(), texte.split(" ; ")[0]))
+        print("  %-*s %s" % (largeur, (c + " " + args).strip(), texte.split(" ; ")[0]))
     return 0
 
 
@@ -301,6 +420,29 @@ def main():
         args.parametre = positionnels[0]
         args.valeur = positionnels[1] if len(positionnels) == 2 else None
         cmd_set(args)
+        return 0
+    if commande == "template":
+        args = Arguments()
+        args.langue = None
+        positionnels = []
+        i = 0
+        while i < len(reste):
+            if reste[i] == "--lang":
+                if i + 1 >= len(reste):
+                    echec("--lang : langue manquante (%sctl help template)" % NOM, 2)
+                args.langue = reste[i + 1]
+                i += 2
+                continue
+            if reste[i].startswith("--"):
+                echec("option inconnue : %s (%sctl help template)" % (reste[i], NOM), 2)
+            positionnels.append(reste[i])
+            i += 1
+        if not positionnels or positionnels[0] not in ("show", "set") \
+                or len(positionnels) > (2 if positionnels[0] == "set" else 1):
+            echec("usage : %sctl template show|set [TEXTE] [--lang LANGUE]" % NOM, 2)
+        args.action = positionnels[0]
+        args.texte = positionnels[1] if len(positionnels) == 2 else None
+        cmd_template(args)
         return 0
     if reste:
         echec("%s : argument inattendu : %s (%sctl help %s)" % (commande, reste[0], NOM, commande), 2)

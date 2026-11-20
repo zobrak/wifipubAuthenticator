@@ -5,6 +5,11 @@ Format : [Keep a Changelog 1.1.0](https://keepachangelog.com/fr/1.1.0/) ;
 numérotation : [Semantic Versioning 2.0.0](https://semver.org/lang/fr/).
 Le numéro de la version courante est dans le fichier `VERSION`.
 
+## [0.11.0] - 2026-11-20
+
+### Ajouté
+- wifipubauthctl template show|set : texte du SMS, longueur contrôlée (160 en GSM 7 bits, 70 sinon), fichier et droits corrects.
+
 ## [0.10.0] - 2026-11-19
 
 ### Ajouté

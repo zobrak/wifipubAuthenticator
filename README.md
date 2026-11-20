@@ -475,9 +475,29 @@ Langue : celle de `Language`, sinon celle du système (`LANG` de
 `/etc/default/locale`). Si le template ne la contient pas, `en-US` est utilisé
 et `wifipubauthctl check` le signale.
 
+### Personnaliser avec wifipubauthctl
+
+```
+sudo wifipubauthctl template set                  # saisie du texte, langue par défaut
+sudo wifipubauthctl template set --lang en-US     # autre langue
+sudo wifipubauthctl template show                 # texte du template et longueur
+sudo wifipubauthctl restart
+```
+
+`template set` écrit `templates.d/FOURNISSEUR-sms.conf` (nom, propriétaire
+`root:wifipubauth` et droits `0640` corrects) et refuse un texte :
+
+- sans `{identifiant}` ou `{mot_de_passe}` ;
+- trop long : 160 caractères en alphabet GSM 7 bits (`€ [ ] { } ^ ~ | \`
+  comptent double), 70 si un caractère est hors de cet alphabet (par exemple
+  `ê`, `ç`, `’`) ; le code compte 13 caractères.
+
+### Écrire le fichier à la main
+
 Le template livré envoie le code sous la forme `{mot_de_passe}-{identifiant}`,
 attendue par la page de connexion livrée. Exemple de personnalisation,
-`/etc/wifipubauth/templates.d/opnsense-sms.conf` :
+`/etc/wifipubauth/templates.d/opnsense-sms.conf` (propriétaire
+`root:wifipubauth`, droits `0640`, nom exact) :
 
 ```
 Message.fr-FR "Wi-Fi solidaire, code valable {validite_heures} h : {mot_de_passe}-{identifiant}"
@@ -511,6 +531,7 @@ wifipubauthctl COMMANDE [ARGUMENTS] [--OPTIONS]
 | `set PARAMÈTRE [VALEUR] [--genkey]` | écrit un réglage dans `conf.d/` après contrôle |
 | `genkey` | affiche une clé pour `FingerprintKey` |
 | `version` | version installée |
+| `template show\|set [TEXTE] [--lang LANGUE]` | texte du SMS : affichage ; écriture contrôlée dans `templates.d/` |
 | `help [COMMANDE]` | aide générale ou d'une commande |
 
 `set` :
